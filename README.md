@@ -134,3 +134,11 @@ pwm_speech.is_playing: speech   # condition
 The name is left over from an earlier version that also spoke the words
 "yes" and "no". The kit's buzzer couldn't reproduce speech, so the words were
 removed.
+
+---
+
+## License
+
+[GNU General Public License v3.0](LICENSE). You may use, modify and
+redistribute this code, but distributed versions, including modified ones,
+must stay under GPL-3.0 and include their source.
