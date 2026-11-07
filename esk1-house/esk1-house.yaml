@@ -1,0 +1,209 @@
+# esk1 house: Casita status board and Fortune button on one ESPHome Starter
+# Kit (ESP32-C6). Started from esphome-fortune-button's fortune-button.yaml.
+#   C6 module           -> controller, ESP-IDF
+#   Button module       -> GPIO6
+#   PIR module          -> GPIO3
+#   RGB + Buzzer module -> 10x WS2812 on GPIO14, buzzer on GPIO18 (LEDC),
+#                          buzzer supply switched by GPIO4
+#   AHT20, SEN65        -> I2C on GPIO1 (SDA) / GPIO0 (SCL)
+#
+# Casita shows the SEN65 readings on the LEDs. While a fortune reading or the
+# easter egg runs, Fortune suspends Casita and draws on the same LEDs, then
+# resumes it. Behaviour lives in the two external components.
+#
+# Casita groups:
+#   top    (3 LEDs) -> PM2.5 (EPA AQI bands)
+#   left   (3 LEDs) -> VOC index
+#   right  (3 LEDs) -> NOx index
+#   center (1 LED)  -> worst of the other three groups' statuses
+substitutions:
+  button_pin: GPIO6
+  buzzer_pin: GPIO18
+  pixel_pin: GPIO14
+  pixel_count: "10"
+  accessory_power_pin: GPIO4
+  pir_pin: GPIO3
+
+esphome:
+  name: esk1-house
+  friendly_name: esk1 house
+  min_version: 2026.8.0          # fortune_button's minimum; Casita needs 2026.3.0
+  on_shutdown:
+    - switch.turn_off: accessory_power
+
+esp32:
+  variant: esp32c6
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+
+# refresh: always fetches main on every build, so component changes are
+# picked up immediately (the default caches for a day).
+external_components:
+  - source: github://davelee98/esphome-fortune-button@main
+    components: [fortune_button]
+    refresh: always
+  - source: github://davelee98/esphome-casita-status@main
+    components: [casita_status]
+    refresh: always
+
+# reboot_timeout 0s on both so a lost connection cannot interrupt a reading.
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  reboot_timeout: 0s
+  ap:
+    ssid: esk1-house Fallback Hotspot
+    password: !secret esk1_house_ap_password
+
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: !secret esk1_house_api_key
+
+ota:
+  - platform: esphome
+
+captive_portal:
+
+web_server:
+  version: 3
+
+i2c:
+  - id: i2c_bus
+    sda: GPIO1
+    scl: GPIO0
+
+# GPIO4 enables +3V3_CTRL, the buzzer supply. Bring it up before outputs.
+switch:
+  - platform: gpio
+    pin: ${accessory_power_pin}
+    id: accessory_power
+    restore_mode: ALWAYS_ON
+    setup_priority: 2000
+    internal: true
+
+output:
+  - platform: ledc
+    pin: ${buzzer_pin}
+    id: buzzer
+
+# Casita's validation fixes this light's settings and requires its own
+# casita_status effect as the only one. Fortune draws through the same light.
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ring
+    internal: true
+    pin: ${pixel_pin}
+    num_leds: ${pixel_count}
+    chipset: WS2812
+    channel_colors: GRB
+    rmt_symbols: 48
+    restore_mode: ALWAYS_OFF
+    default_transition_length: 0s
+    effects:
+      - casita_status:
+
+# Casita self-test, about 22 s: a white dot walks the LEDs from the roof peak
+# clockwise, then every group shows statuses 1-6, Initializing and Unknown.
+# Does nothing while a fortune reading has Casita suspended.
+button:
+  - platform: template
+    name: Casita Self Test
+    on_press:
+      - casita_status.run_test: casita_board
+
+binary_sensor:
+  - platform: gpio
+    id: ask_button
+    internal: true
+    pin:
+      number: ${button_pin}
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 20ms
+
+  - platform: gpio
+    name: Motion
+    id: pir
+    pin:
+      number: ${pir_pin}
+      mode:
+        input: true
+        pulldown: false
+    device_class: motion
+
+sensor:
+  - platform: aht10
+    variant: AHT20
+    id: aht20
+    update_interval: 60s
+    temperature:
+      name: AHT20 Temperature
+    humidity:
+      name: AHT20 Humidity
+
+  - platform: sen6x
+    id: sen65
+    type: SEN65
+    update_interval: 60s
+    pm_1_0:
+      name: SEN65 PM1.0
+    pm_2_5:
+      name: SEN65 PM2.5
+      id: sen65_pm_2_5
+    pm_4_0:
+      name: SEN65 PM4.0
+    pm_10_0:
+      name: SEN65 PM10
+    temperature:
+      name: SEN65 Temperature
+    humidity:
+      name: SEN65 Humidity
+    voc_index:
+      name: SEN65 VOC Index
+      id: sen65_voc
+    nox_index:
+      name: SEN65 NOx Index
+      id: sen65_nox
+
+# The SEN65 groups take the default ttl, 3 x its 60 s update_interval, and
+# wait up to that long for a first value: sen6x ignores readings for 60 s after
+# start-up, so they can take about 2 minutes. The center is a worst group: the
+# highest status of the other three, with no deadlines of its own.
+casita_status:
+  id: casita_board
+  light_id: led_ring
+  brightness: 50%
+  groups:
+    top:
+      type: pm25
+      sensor: sen65_pm_2_5
+    left:
+      type: voc
+      sensor: sen65_voc
+    right:
+      type: nox
+      sensor: sen65_nox
+    center:
+      type: worst
+      of: [top, left, right]
+
+fortune_button:
+  light: led_ring
+  output: buzzer
+  button: ask_button
+  yes_percent: 50
+  # Fortune scales colours before gamma (output = b^2.8); Casita scales the
+  # output itself. 78% here matches Casita's 50% (0.5^(1/2.8) = 0.78).
+  brightness: 78%
+  share_light: true
+  on_start:
+    - casita_status.suspend: casita_board
+  on_finish:
+    - casita_status.resume: casita_board

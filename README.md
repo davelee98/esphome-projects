@@ -1,11 +1,13 @@
 # esphome-projects
 
 Standalone [ESPHome](https://esphome.io) projects. Each one lives in its own
-directory with everything it needs to compile.
+directory with everything it needs to compile, apart from any external
+components it loads from GitHub and its `secrets.yaml`.
 
 | Project | What it is |
 |---|---|
 | [fortune-button](fortune-button/) | A yes/no oracle toy: press the button, a prize wheel of LEDs spins and ticks, then it gives a verdict in light and sound |
+| [esk1-house](esk1-house/) | The whole ESK-1 kit in one device: an air-quality status board on the LED house, plus the fortune button on the same LEDs |
 
 ---
 
@@ -134,6 +136,92 @@ pwm_speech.is_playing: speech   # condition
 The name is left over from an earlier version that also spoke the words
 "yes" and "no". The kit's buzzer couldn't reproduce speech, so the words were
 removed.
+
+---
+
+## esk1 house
+
+Every module in the ESK-1 kit on one ESP32-C6. The 10 LEDs of the Casita
+house show indoor air quality from the SEN65, and pressing the button asks
+the fortune button for a yes or no on the same LEDs. When the reading ends,
+the air-quality display comes back.
+
+It's built from two external components, loaded from GitHub:
+
+- [esphome-casita-status](https://github.com/davelee98/esphome-casita-status)
+  drives the status display.
+- [esphome-fortune-button](https://github.com/davelee98/esphome-fortune-button)
+  is the fortune button as a component.
+
+The YAML wires them to the hardware and has no lambdas of its own.
+
+### Hardware
+
+| Part | Connection |
+|---|---|
+| ESPHome C6 board (ESP32-C6) | Controller, ESP-IDF |
+| Button module | GPIO6 |
+| PIR module | GPIO3 |
+| LED/buzzer module: 10 WS2812 LEDs | GPIO14 |
+| LED/buzzer module: buzzer | GPIO18 (LEDC) |
+| Accessory power switch (+3V3_CTRL, the buzzer's supply) | GPIO4 |
+| AHT20 and SEN65 | I2C: SDA GPIO1, SCL GPIO0 |
+
+### What the LEDs show
+
+| Group | LEDs | Shows |
+|---|---|---|
+| Top | 3 | PM2.5, in EPA AQI bands |
+| Left | 3 | VOC index |
+| Right | 3 | NOx index |
+| Center | 1 | The worst status of the other three |
+
+After power-up the groups show Initializing for up to about 2 minutes. The
+SEN65 driver ignores readings for its first 60 s, and the sensor reports
+every 60 s. If a sensor stops reporting for 3 minutes, its group shows
+Unknown.
+
+While a fortune reading or the easter egg runs, Fortune suspends Casita and
+draws on the LEDs, then resumes it. Fortune's brightness is set to 78% so
+that it matches Casita's 50%: Fortune scales colours before gamma
+correction, and Casita scales the output after it.
+
+### Exposed to Home Assistant and the web page
+
+- AHT20 temperature and humidity.
+- SEN65 PM1.0, PM2.5, PM4.0, PM10, temperature, humidity, VOC index and
+  NOx index.
+- Motion, from the PIR.
+- Casita brightness, as a number (25–100%, saved across restarts).
+- Casita group states.
+- **Casita Self Test**, a button that runs a test of about 22 s:
+  - A white dot walks the LEDs clockwise from the roof peak.
+  - Every group then shows statuses 1–6, Initializing and Unknown.
+
+### Build and flash
+
+It uses Wi-Fi, the API and OTA, so put a `secrets.yaml` beside the YAML with
+these four entries:
+
+| Secret | What it is |
+|---|---|
+| `wifi_ssid` | Your Wi-Fi network |
+| `wifi_password` | Your Wi-Fi password |
+| `esk1_house_ap_password` | Password for the fallback hotspot |
+| `esk1_house_api_key` | The API encryption key, 32 bytes in base64 |
+
+From `esk1-house/`:
+
+```sh
+esphome run esk1-house.yaml
+```
+
+The first flash is over USB-C, and later ones can be over OTA. With Device
+Builder, copy `esk1-house.yaml` to the top of its config directory; there are
+no local paths to change.
+
+Both components are fetched from `main` with `refresh: always`, so each build
+picks up their latest changes. It needs ESPHome 2026.8 or later.
 
 ---
 
