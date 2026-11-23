@@ -12,8 +12,12 @@
 # No bluetooth_proxy here: Home Assistant's OpenDisplay integration could then
 # reach the same label through this device and the two would fight over it.
 substitutions:
-  # BLE address of the label (shown in the OpenDisplay app / HA, or in this
-  # device's log with esp32_ble_tracker at DEBUG).
+  # How the label is found. By default by its advertised BLE name (a trailing
+  # * matches a prefix); the name can also be changed at run time from the
+  # web page or Home Assistant ("BLE Name"), which then wins over this value.
+  esl_name: "OpenDisplay*"
+  # MAC override: any address other than 00:00:00:00:00:00 is used as is and
+  # the name is ignored. The address in use is shown as "Label MAC".
   esl_mac: "00:00:00:00:00:00"
 
 esphome:
@@ -50,6 +54,12 @@ ota:
   - platform: esphome
 
 captive_portal:
+
+# Web page at http://esk1-air-epaper.local/ with the label's BLE name (editable)
+# and MAC address, next to the sensor readings.
+web_server:
+  port: 80
+  version: 3
 
 esp32_ble_tracker:
   scan_parameters:
@@ -102,29 +112,44 @@ sensor:
     entity_category: diagnostic
 
 font:
-  - file: "gfonts://Roboto"
+  # Three Terminus assets: normal labels and bold values. Value fonts contain digits,
+  # decimal point, minus, space, degree sign, F, C and percent.
+  - file: "fonts/terminus/ter-u14n.bdf"
     id: font_label
-    size: 22
-  - file: "gfonts://Roboto@700"
+    size: 14
+    bpp: 1
+    glyphsets: []
+    glyphs: ["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?+-_/%()°µ³"]
+  - file: "fonts/terminus/ter-u32b.bdf"
     id: font_value
-    size: 40
-  - file: "gfonts://Roboto"
-    id: font_small
-    size: 16
+    size: 32
+    bpp: 1
+    glyphsets: []
+    glyphs: ["0123456789.- °FC%"]
+  - file: "fonts/terminus/ter-u24b.bdf"
+    id: font_medium
+    size: 24
+    bpp: 1
+    glyphsets: []
+    glyphs: ["0123456789.- °FC%"]
 
-# The label's config is checked on every connection: if width, height or
-# color_scheme does not match the panel, the upload stops and the log gives
-# the label's real values.
+# A 30,000-byte frame buffer (400x300 BWRY, the largest supported) is reserved
+# at boot. The label's panel size and colour scheme are read on every
+# connection and win over width / height / color_scheme here, which are
+# optional: they are only the starting point, and the fallback for a label
+# with no stored config.
 display:
   - platform: opendisplay
     id: epaper
     ble_client_id: esl_client
+    ble_name: ${esl_name}
     width: 400
     height: 300
-    color_scheme: MONO           # MONO, BWR or BWY
+    color_scheme: BWRY           # MONO, BWR, BWY or BWRY
     refresh_mode: FULL           # FULL or FAST
     update_interval: 5min
-    # COLOR_ON is ink, COLOR_OFF is paper (the page is cleared to white).
+    # COLOR_ON is black ink, COLOR_OFF is paper (the page is cleared to
+    # white). Other colours become the nearest ink, e.g. Color(255, 0, 0) red.
     lambda: |-
       auto value = [&](float v, const char *fmt, char *buf, size_t n) {
         if (std::isnan(v)) snprintf(buf, n, "--");
@@ -142,11 +167,11 @@ display:
       it.print(20, 74, id(font_value), value(id(pm_2_5).state, "%.0f", buf, sizeof(buf)));
       it.print(20, 130, id(font_label), "PM10");
       it.print(20, 154, id(font_value), value(id(pm_10_0).state, "%.0f", buf, sizeof(buf)));
-      it.print(20, 210, id(font_small), "PM1.0");
-      it.print(90, 210, id(font_small), value(id(pm_1_0).state, "%.0f", buf, sizeof(buf)));
-      it.print(20, 232, id(font_small), "PM4.0");
-      it.print(90, 232, id(font_small), value(id(pm_4_0).state, "%.0f", buf, sizeof(buf)));
-      it.print(20, 254, id(font_small), "ug/m3");
+      it.print(20, 210, id(font_label), "PM1.0");
+      it.print(90, 210, id(font_label), value(id(pm_1_0).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 232, id(font_label), "PM4.0");
+      it.print(90, 232, id(font_label), value(id(pm_4_0).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 254, id(font_label), "ug/m3");
 
       it.line(200, 46, 200, 270);
 
@@ -155,13 +180,43 @@ display:
       it.print(220, 74, id(font_value), value(id(voc_index).state, "%.0f", buf, sizeof(buf)));
       it.print(220, 130, id(font_label), "NOx");
       it.print(220, 154, id(font_value), value(id(nox_index).state, "%.0f", buf, sizeof(buf)));
-      it.print(220, 210, id(font_small), "Temp");
-      it.print(300, 210, id(font_small), value(id(temperature).state, "%.1f C", buf, sizeof(buf)));
-      it.print(220, 232, id(font_small), "Humidity");
-      it.print(300, 232, id(font_small), value(id(humidity).state, "%.0f %%", buf, sizeof(buf)));
+      it.print(220, 210, id(font_label), "Temp");
+      it.print(390, 210, id(font_medium), TextAlign::TOP_RIGHT, value(id(temperature).state, "%.1f °C", buf, sizeof(buf)));
+      it.print(220, 244, id(font_label), "Humidity");
+      it.print(390, 244, id(font_medium), TextAlign::TOP_RIGHT, value(id(humidity).state, "%.0f %%", buf, sizeof(buf)));
 
 button:
   - platform: template
     name: Refresh E-Paper
     on_press:
       - component.update: epaper
+
+# The label's BLE name, editable on the web page and in Home Assistant. The
+# value is kept across reboots; esl_name above is only the first-boot default.
+text:
+  - platform: template
+    id: ble_name_text
+    name: BLE Name
+    icon: mdi:bluetooth
+    entity_category: config
+    mode: text
+    max_length: 29
+    optimistic: true
+    restore_value: true
+    initial_value: ${esl_name}
+    on_value:
+      - lambda: id(epaper).set_ble_name(x);
+
+text_sensor:
+  - platform: template
+    name: Label MAC
+    icon: mdi:bluetooth-connect
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      std::string mac = id(epaper).get_label_mac();
+      if (mac.empty())
+        return std::string("not found yet");
+      if (id(epaper).has_mac_override())
+        mac += " (override)";
+      return mac;

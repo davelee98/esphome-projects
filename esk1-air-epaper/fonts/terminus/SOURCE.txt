@@ -1,0 +1,13 @@
+Terminus Font 4.49.1
+Upstream: https://terminus-font.sourceforge.net/
+Archive: https://sourceforge.net/projects/terminus-font/files/terminus-font-4.49/terminus-font-4.49.1.tar.gz/download
+Archive SHA-256: d961c1b781627bf417f9b340693d64fc219e0113ad3a3af1a3424c7aa373ef79
+License: OFL.TXT (unmodified upstream license)
+
+Unmodified upstream BDF inputs:
+ter-u14n.bdf: native 8x14 normal labels
+ter-u24b.bdf: native 12x24 bold numbers
+ter-u32b.bdf: native 16x32 bold numbers
+ter-u12n.bdf: native 6x12 normal source for the single PM-unit bitmap only
+
+Only 14/24/32 px are configured as runtime fonts. Glyphs are copied 1:1.

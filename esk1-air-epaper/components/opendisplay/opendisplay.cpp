@@ -7,6 +7,7 @@
 
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 namespace esphome::opendisplay {
@@ -21,6 +22,9 @@ static const uint16_t CMD_CONFIG_READ = 0x0040;
 static const uint16_t CMD_DIRECT_WRITE_START = 0x0070;
 static const uint16_t CMD_DIRECT_WRITE_DATA = 0x0071;
 static const uint16_t CMD_DIRECT_WRITE_END = 0x0072;
+
+// Preference key for the address found by name.
+static const uint32_t PREF_KEY = 0x0D15A1B1;
 
 static const uint8_t RESP_ACK = 0x00;
 static const uint8_t RESP_NACK = 0xFF;
@@ -49,8 +53,26 @@ static const uint8_t TRANSMISSION_ZIP = 0x02;                      // firmware <
 // Config TLV packet types and their fixed body sizes (py-opendisplay
 // protocol/config_parser.py). Types >= 0x80 carry [len:2 LE] after the header.
 static const uint8_t PACKET_TYPE_DISPLAY = 0x20;
+static const uint8_t PACKET_TYPE_DISPLAY_PANEL = 0xB1;
 static const uint8_t LENGTH_PREFIXED_MIN_TYPE = 0x80;
 static const size_t DISPLAY_PACKET_SIZE = 46;
+// display_panel (0xB1) body: <BBBHH4s...: instance, flags, busy idle level,
+// busy timeout, busy delay, code_map (py-opendisplay models/panel_drive.py).
+static const size_t DISPLAY_PANEL_CODE_MAP_OFFSET = 7;
+
+// BWRY logical colour (Ink) -> 2-bit panel code. Most panels use the palette
+// order; EP29YR_128x296 swaps yellow and red (py-opendisplay display_palettes.py).
+static const uint16_t PANEL_IC_EP29YR_128X296 = 0x001D;
+static const uint8_t BWRY_CODES_DEFAULT[4] = {0, 1, 2, 3};
+static const uint8_t BWRY_CODES_SWAPPED[4] = {0, 1, 3, 2};
+
+// Nominal ink colours, indexed by Ink (py-opendisplay palettes/ideal_*.json).
+static const uint8_t INK_RGB[4][3] = {
+    {0, 0, 0},        // black
+    {255, 255, 255},  // white
+    {255, 255, 0},    // yellow
+    {255, 0, 0},      // red
+};
 
 static int legacy_packet_size(uint8_t type) {
   switch (type) {
@@ -84,6 +106,7 @@ static int legacy_packet_size(uint8_t type) {
 }
 
 // ---- Timeouts (py-opendisplay device/upload.py budgets, ms) ----
+static const uint32_t TIMEOUT_DISCOVER = 120000; // listening for the label's name
 static const uint32_t TIMEOUT_CONNECT = 120000;  // the label may advertise slowly
 static const uint32_t TIMEOUT_COMMAND = 10000;
 static const uint32_t TIMEOUT_DATA_ACK = 90000;  // each ACK follows a blocking panel write
@@ -92,11 +115,11 @@ static const uint32_t TIMEOUT_REFRESH = 90000;
 
 static const char *state_name(uint8_t state) {
   static const char *const NAMES[] = {"idle",    "connecting", "reading config", "starting",
-                                      "sending", "ending",     "refreshing"};
+                                      "sending", "ending",     "refreshing",     "discovering"};
   return state < sizeof(NAMES) / sizeof(NAMES[0]) ? NAMES[state] : "?";
 }
 
-static const char *scheme_name(ColorScheme scheme) {
+static const char *scheme_name(uint8_t scheme) {
   switch (scheme) {
     case COLOR_SCHEME_MONO:
       return "MONO";
@@ -104,8 +127,38 @@ static const char *scheme_name(ColorScheme scheme) {
       return "BWR";
     case COLOR_SCHEME_BWY:
       return "BWY";
+    case COLOR_SCHEME_BWRY:
+      return "BWRY";
+    case COLOR_SCHEME_BWGBRY:
+      return "BWGBRY (Spectra 6)";
+    case COLOR_SCHEME_GRAY4:
+      return "GRAY4";
+    case COLOR_SCHEME_GRAY16:
+      return "GRAY16";
+    case COLOR_SCHEME_SEVEN_COLOR:
+      return "SEVEN_COLOR";
+    case COLOR_SCHEME_BWGBRY_SPLIT:
+      return "BWGBRY_SPLIT";
+    case COLOR_SCHEME_BWRY16:
+      return "BWRY16";
+    case COLOR_SCHEME_RGB565:
+      return "RGB565";
+    case COLOR_SCHEME_RGB888:
+      return "RGB888";
+    case COLOR_SCHEME_RGB16BPC:
+      return "RGB16BPC";
     default:
-      return "?";
+      return "unknown";
+  }
+}
+
+// Maps every 2-bit field of a byte through a 4-entry table.
+static void build_2bpp_lut(const uint8_t codes[4], std::array<uint8_t, 256> &lut) {
+  for (unsigned b = 0; b < 256; b++) {
+    uint8_t out = 0;
+    for (unsigned shift = 0; shift < 8; shift += 2)
+      out |= codes[(b >> shift) & 0x03] << shift;
+    lut[b] = out;
   }
 }
 
@@ -114,28 +167,133 @@ static const char *scheme_name(ColorScheme scheme) {
 // ======================================================================
 
 void OpenDisplay::setup() {
-  this->init_internal_(this->buffer_bytes_());
+  // Room for the largest supported frame, reserved once; whatever panel the
+  // label reports is drawn into the start of it.
+  this->init_internal_(MAX_FRAME_BYTES);
   if (this->buffer_ == nullptr) {
+    ESP_LOGE(TAG, "Could not reserve the %u-byte frame buffer", (unsigned) MAX_FRAME_BYTES);
     this->mark_failed();
     return;
+  }
+  if (this->panel_known_() && !this->adopt_panel_(this->width_, this->height_, this->color_scheme_)) {
+    // display.py rejects these already; this only guards hand-written code.
+    this->width_ = this->height_ = 0;
   }
   // Connect only while an upload is running. ble_client's auto-connect does
   // the scan-and-connect (learning the label's address type) once enabled.
   this->parent()->set_enabled(false);
+
+  // A real mac_address in the YAML wins; 00:00:00:00:00:00 means find the
+  // label by name, starting from the address last found for that name.
+  this->mac_override_ = this->parent()->get_address() != 0;
+  this->pref_ = global_preferences->make_preference<SavedLabel>(PREF_KEY, true);
+  SavedLabel saved{};
+  if (!this->mac_override_ && !this->ble_name_.empty() && this->pref_.load(&saved) &&
+      saved.name_hash == fnv1_hash(this->ble_name_) && saved.address != 0) {
+    this->parent()->set_address(saved.address);
+    this->parent()->set_remote_addr_type(static_cast<esp_ble_addr_type_t>(saved.address_type));
+    ESP_LOGD(TAG, "Label '%s' was last found at %s", this->ble_name_.c_str(), this->parent()->address_str());
+  }
+  this->setup_done_ = true;
+}
+
+void OpenDisplay::set_ble_name(const std::string &name) {
+  if (name == this->ble_name_)
+    return;
+  this->ble_name_ = name;
+  if (!this->setup_done_)
+    return;  // setup() looks up the saved address for this name
+  if (this->mac_override_) {
+    ESP_LOGI(TAG, "BLE name set to '%s'; the MAC override %s is still used", name.c_str(),
+             this->parent()->address_str());
+    return;
+  }
+  ESP_LOGI(TAG, "BLE name set to '%s'", name.c_str());
+  if (this->state_ == State::DISCOVERING) {
+    this->forget_address_();  // keep listening, for the new name
+  } else if (this->state_ != State::IDLE) {
+    this->name_change_pending_ = true;  // finish_() applies it
+  } else {
+    this->forget_address_();
+    this->defer([this]() { this->update(); });
+  }
+}
+
+std::string OpenDisplay::get_label_mac() { return std::string(this->parent()->address_str()); }
+
+bool OpenDisplay::name_matches_(const char *name, size_t len) const {
+  const std::string &want = this->ble_name_;
+  if (want.empty())
+    return false;
+  if (want.back() == '*') {
+    size_t n = want.size() - 1;
+    return len >= n && memcmp(name, want.data(), n) == 0;
+  }
+  return len == want.size() && memcmp(name, want.data(), len) == 0;
+}
+
+// Drops the address found by name, so the next upload looks it up again.
+void OpenDisplay::forget_address_() {
+  this->parent()->set_enabled(false);
+  this->parent()->set_address(0);
+  SavedLabel none{};
+  this->pref_.save(&none);
+  // Whatever label turns up next has not been sent this frame.
+  this->has_sent_ = false;
+}
+
+bool OpenDisplay::parse_device(const espbt::ESPBTDevice &device) {
+  if (this->state_ != State::DISCOVERING)
+    return false;
+  auto name = device.get_name();
+  if (name.empty() || !this->name_matches_(name.c_str(), name.size()))
+    return false;
+  uint64_t address = device.address_uint64();
+  auto address_type = static_cast<esp_ble_addr_type_t>(device.get_address_type());
+  this->parent()->set_address(address);
+  this->parent()->set_remote_addr_type(address_type);
+  SavedLabel saved{fnv1_hash(this->ble_name_), address, static_cast<uint8_t>(address_type)};
+  this->pref_.save(&saved);
+  ESP_LOGI(TAG, "Found label '%.*s' at %s (RSSI %d)", (int) name.size(), name.c_str(), this->parent()->address_str(),
+           device.get_rssi());
+  this->connect_();
+  return true;
+}
+
+void OpenDisplay::connect_() {
+  this->set_state_(State::CONNECTING, TIMEOUT_CONNECT);
+  if (this->char_handle_ != 0 && this->node_state == espbt::ClientState::ESTABLISHED) {
+    this->begin_session_();
+  } else {
+    this->parent()->set_enabled(true);
+  }
 }
 
 void OpenDisplay::dump_config() {
   LOG_DISPLAY("", "OpenDisplay", this);
+  char panel[48];
+  if (this->panel_known_()) {
+    snprintf(panel, sizeof(panel), "%ux%u %s (%u bytes)", this->width_, this->height_,
+             scheme_name(this->color_scheme_), (unsigned) this->buffer_bytes_());
+  } else {
+    snprintf(panel, sizeof(panel), "read from the label");
+  }
+  if (this->mac_override_) {
+    ESP_LOGCONFIG(TAG, "  Label         : MAC %s (override; BLE name '%s' not used)", this->parent()->address_str(),
+                  this->ble_name_.c_str());
+  } else {
+    const char *mac = this->parent()->address_str();
+    ESP_LOGCONFIG(TAG, "  Label         : BLE name '%s', %s%s", this->ble_name_.c_str(),
+                  mac[0] != '\0' ? "last found at " : "not found yet", mac);
+  }
   ESP_LOGCONFIG(TAG,
-                "  MAC address   : %s\n"
-                "  Panel         : %ux%u %s\n"
+                "  Panel         : %s\n"
                 "  Refresh mode  : %s\n"
                 "  Skip unchanged: %s\n"
                 "  Compression   : %s\n"
-                "  Buffer        : %u bytes",
-                this->parent()->address_str(), this->width_, this->height_, scheme_name(this->color_scheme_),
-                this->refresh_mode_ == REFRESH_MODE_FAST ? "FAST" : "FULL", YESNO(this->skip_unchanged_),
-                YESNO(this->compression_), (unsigned) this->buffer_bytes_());
+                "  Buffer        : %u bytes reserved",
+                panel, this->refresh_mode_ == REFRESH_MODE_FAST ? "FAST" : "FULL",
+                YESNO(this->skip_unchanged_), YESNO(this->compression_), (unsigned) MAX_FRAME_BYTES);
   LOG_UPDATE_INTERVAL(this);
 }
 
@@ -145,20 +303,31 @@ void OpenDisplay::update() {
     this->update_pending_ = true;
     return;
   }
-  this->do_update_();
-  this->frame_hash_ = this->buffer_hash_();
-  if (this->skip_unchanged_ && this->has_sent_ && this->frame_hash_ == this->last_sent_hash_) {
-    ESP_LOGD(TAG, "Frame unchanged, not uploading");
-    return;
+  this->drawn_ = false;
+  if (this->panel_known_()) {
+    // Draw at the panel size learned last time; if the label reports another
+    // one on connecting, the frame is drawn again at that size.
+    this->draw_frame_();
+    if (this->skip_unchanged_ && this->has_sent_ && this->frame_hash_ == this->last_sent_hash_) {
+      ESP_LOGD(TAG, "Frame unchanged, not uploading");
+      return;
+    }
+  } else {
+    ESP_LOGD(TAG, "Panel size not known yet; reading it from the label before drawing");
+  }
+  this->upload_started_ms_ = millis();
+  if (this->parent()->get_address() == 0) {
+    if (this->ble_name_.empty()) {
+      ESP_LOGW(TAG, "No label to upload to: set ble_client mac_address, or ble_name");
+      this->status_set_warning();
+      return;
+    }
+    ESP_LOGI(TAG, "Searching for a label named '%s'", this->ble_name_.c_str());
+    this->set_state_(State::DISCOVERING, TIMEOUT_DISCOVER);
+    return;  // parse_device() connects when it hears the name
   }
   ESP_LOGI(TAG, "Uploading frame to %s", this->parent()->address_str());
-  this->upload_started_ms_ = millis();
-  this->set_state_(State::CONNECTING, TIMEOUT_CONNECT);
-  if (this->char_handle_ != 0 && this->node_state == espbt::ClientState::ESTABLISHED) {
-    this->begin_session_();
-  } else {
-    this->parent()->set_enabled(true);
-  }
+  this->connect_();
 }
 
 void OpenDisplay::loop() {
@@ -166,10 +335,73 @@ void OpenDisplay::loop() {
   if (this->state_ == State::IDLE || this->state_timeout_ms_ == 0)
     return;
   if (millis() - this->state_started_ms_ > this->state_timeout_ms_) {
-    char reason[48];
-    snprintf(reason, sizeof(reason), "timed out while %s", state_name(static_cast<uint8_t>(this->state_)));
+    State state = this->state_;
+    char reason[96];
+    if (state == State::DISCOVERING) {
+      snprintf(reason, sizeof(reason), "no label named '%.40s' heard", this->ble_name_.c_str());
+    } else {
+      snprintf(reason, sizeof(reason), "timed out while %s", state_name(static_cast<uint8_t>(state)));
+    }
     this->finish_(false, reason);
+    if (state == State::CONNECTING && !this->mac_override_ && this->parent()->get_address() != 0) {
+      // The label may have a new address now; look it up by name next time.
+      ESP_LOGW(TAG, "No answer at %s; searching by name next time", this->parent()->address_str());
+      this->forget_address_();
+    }
   }
+}
+
+void OpenDisplay::draw_frame_() {
+  this->do_update_();
+  this->frame_hash_ = this->buffer_hash_();
+  this->drawn_ = true;
+}
+
+// Takes on the panel the label reports, if its frame fits the reserved buffer.
+bool OpenDisplay::adopt_panel_(uint16_t width, uint16_t height, uint8_t scheme) {
+  bool same = width == this->width_ && height == this->height_ && scheme == this->color_scheme_;
+  if (!scheme_supported_(scheme)) {
+    ESP_LOGE(TAG, "The label's colour scheme %s (%u) is not supported; only MONO, BWR, BWY and BWRY are",
+             scheme_name(scheme), scheme);
+    if (this->state_ != State::IDLE)
+      this->finish_(false, "unsupported colour scheme");
+    return false;
+  }
+  size_t need = frame_bytes_(width, height, scheme);
+  if (width == 0 || height == 0 || need > MAX_FRAME_BYTES) {
+    ESP_LOGE(TAG, "A %ux%u %s frame needs %u bytes; the reserved buffer holds %u (a 400x300 BWRY frame)", width,
+             height, scheme_name(scheme), (unsigned) need, (unsigned) MAX_FRAME_BYTES);
+    if (this->state_ != State::IDLE)
+      this->finish_(false, "panel too large");
+    return false;
+  }
+  if (same)
+    return true;
+  if (this->state_ != State::IDLE) {
+    if (this->panel_known_()) {
+      ESP_LOGW(TAG, "Label is %ux%u %s, not %ux%u %s; drawing for the label's panel", width, height,
+               scheme_name(scheme), this->width_, this->height_, scheme_name(this->color_scheme_));
+    } else {
+      ESP_LOGI(TAG, "Label is %ux%u %s (%u of %u buffer bytes)", width, height, scheme_name(scheme),
+               (unsigned) need, (unsigned) MAX_FRAME_BYTES);
+    }
+  }
+  this->width_ = width;
+  this->height_ = height;
+  this->color_scheme_ = static_cast<ColorScheme>(scheme);
+  // The buffer must be drawn again at the new size, and the last frame sent
+  // no longer says anything about this one.
+  this->drawn_ = false;
+  this->has_sent_ = false;
+  return true;
+}
+
+// The panel is settled: draw if the buffer does not hold this frame at this
+// size yet, then send it.
+void OpenDisplay::config_done_() {
+  if (!this->drawn_)
+    this->draw_frame_();
+  this->start_upload_();
 }
 
 void OpenDisplay::set_state_(State state, uint32_t timeout_ms) {
@@ -190,6 +422,12 @@ void OpenDisplay::finish_(bool success, const char *reason) {
     this->status_set_warning();
     ESP_LOGW(TAG, "Upload failed: %s", reason);
   }
+  // Put the BWRY buffer back into logical colours for the next draw.
+  if (this->bwry_applied_) {
+    for (size_t i = 0, n = this->buffer_bytes_(); i < n; i++)
+      this->buffer_[i] = this->bwry_unlut_[this->buffer_[i]];
+    this->bwry_applied_ = false;
+  }
   this->state_ = State::IDLE;
   this->state_timeout_ms_ = 0;
   this->config_.clear();
@@ -201,6 +439,11 @@ void OpenDisplay::finish_(bool success, const char *reason) {
   this->tx_.shrink_to_fit();
   // Disconnect so the label can go back to sleep.
   this->parent()->set_enabled(false);
+  if (this->name_change_pending_) {
+    this->name_change_pending_ = false;
+    this->forget_address_();
+    this->update_pending_ = true;  // send to the label with the new name
+  }
   if (this->update_pending_) {
     this->update_pending_ = false;
     this->defer([this]() { this->update(); });
@@ -214,43 +457,75 @@ void OpenDisplay::finish_(bool success, const char *reason) {
 // COLOR_OFF (all zero) is bare paper and COLOR_ON (all 0xFF) is ink, as on the
 // other ESPHome e-paper drivers, so auto-clear gives a white page and default
 // text is black. MONO follows the binary convention: any lit colour is ink.
-// The colour schemes also take real colours: a saturated red (BWR) or yellow
-// (BWY) is the accent ink; anything else is black or white by luminance.
+// The colour schemes take real colours too: each becomes the nearest ink the
+// panel has (by RGB distance), so Color(255, 0, 0) is red on BWR and BWRY.
 OpenDisplay::Ink OpenDisplay::classify_(Color color) const {
   if (color.raw_32 == 0)
     return Ink::WHITE;
   if (this->color_scheme_ == COLOR_SCHEME_MONO || color.raw_32 == 0xFFFFFFFF)
     return Ink::BLACK;
-  bool r = color.r >= 128, g = color.g >= 128, b = color.b >= 128;
-  if (this->color_scheme_ == COLOR_SCHEME_BWR && r && !g && !b)
-    return Ink::ACCENT;
-  if (this->color_scheme_ == COLOR_SCHEME_BWY && r && g && !b)
-    return Ink::ACCENT;
-  uint32_t luma = (color.r * 77u + color.g * 150u + color.b * 29u) >> 8;
-  return luma >= 128 ? Ink::WHITE : Ink::BLACK;
+  uint8_t inks;  // bit n set = Ink n available
+  switch (this->color_scheme_) {
+    case COLOR_SCHEME_BWR:
+      inks = 0b001011;
+      break;
+    case COLOR_SCHEME_BWY:
+      inks = 0b000111;
+      break;
+    default:  // BWRY
+      inks = 0b001111;
+      break;
+  }
+  uint8_t best = 0;
+  uint32_t best_dist = UINT32_MAX;
+  for (uint8_t i = 0; i < 4; i++) {
+    if (!(inks & (1u << i)))
+      continue;
+    int dr = color.r - INK_RGB[i][0], dg = color.g - INK_RGB[i][1], db = color.b - INK_RGB[i][2];
+    uint32_t dist = dr * dr + dg * dg + db * db;
+    if (dist < best_dist) {
+      best_dist = dist;
+      best = i;
+    }
+  }
+  return static_cast<Ink>(best);
 }
 
-// Plane 1 (BW): bit set = white. Plane 2 (accent): bit set = red / yellow.
-// 8 px per byte, MSB first, rows padded to a byte. Red also sets the BW bit;
-// yellow does not (py-opendisplay encoding/bitplanes.py).
+// Buffer layouts, rows padded to a whole byte, leftmost pixel in the high bits
+// (py-opendisplay encoding/bitplanes.py and images.py):
+//   MONO      one 1bpp plane, bit set = white.
+//   BWR / BWY 1bpp BW plane (bit set = white) then 1bpp accent plane (bit set
+//             = red / yellow). Red also sets the BW bit; yellow does not.
+//   BWRY      2bpp, the logical colour (Ink 0..3). It is mapped to the label's
+//             panel codes just before upload (see start_upload_()).
 void OpenDisplay::draw_absolute_pixel_internal(int x, int y, Color color) {
   if (x < 0 || y < 0 || x >= this->width_ || y >= this->height_ || this->buffer_ == nullptr)
     return;
-  size_t index = y * this->row_bytes_() + (x >> 3);
-  uint8_t mask = 0x80 >> (x & 7);
   Ink ink = this->classify_(color);
-  bool bw = ink == Ink::WHITE || (ink == Ink::ACCENT && this->color_scheme_ == COLOR_SCHEME_BWR);
-  if (bw) {
-    this->buffer_[index] |= mask;
-  } else {
-    this->buffer_[index] &= ~mask;
+  uint8_t *row = this->buffer_ + y * this->row_bytes_();
+
+  if (this->color_scheme_ == COLOR_SCHEME_BWRY) {
+    uint8_t shift = 6 - 2 * (x & 3);
+    uint8_t &b = row[x >> 2];
+    b = (b & ~(0x03 << shift)) | (static_cast<uint8_t>(ink) << shift);
+    return;
   }
-  if (this->color_scheme_ != COLOR_SCHEME_MONO) {
-    uint8_t *accent = this->buffer_ + this->plane_bytes_();
-    if (ink == Ink::ACCENT) {
-      accent[index] |= mask;
+
+  size_t index = x >> 3;
+  uint8_t mask = 0x80 >> (x & 7);
+  bool accent = ink == Ink::RED || ink == Ink::YELLOW;
+  bool bw = ink == Ink::WHITE || ink == Ink::RED;
+  if (bw) {
+    row[index] |= mask;
+  } else {
+    row[index] &= ~mask;
+  }
+  if (this->has_accent_plane_()) {
+    uint8_t *accent_row = row + this->plane_bytes_();
+    if (accent) {
+      accent_row[index] |= mask;
     } else {
-      accent[index] &= ~mask;
+      accent_row[index] &= ~mask;
     }
   }
 }
@@ -264,10 +539,48 @@ void OpenDisplay::fill(Color color) {
     return;
   }
   Ink ink = this->classify_(color);
-  bool bw = ink == Ink::WHITE || (ink == Ink::ACCENT && this->color_scheme_ == COLOR_SCHEME_BWR);
+  if (this->color_scheme_ == COLOR_SCHEME_BWRY) {
+    memset(this->buffer_, static_cast<uint8_t>(ink) * 0x55, this->buffer_bytes_());
+    return;
+  }
+  bool bw = ink == Ink::WHITE || ink == Ink::RED;
   memset(this->buffer_, bw ? 0xFF : 0x00, this->plane_bytes_());
-  if (this->color_scheme_ != COLOR_SCHEME_MONO)
-    memset(this->buffer_ + this->plane_bytes_(), ink == Ink::ACCENT ? 0xFF : 0x00, this->plane_bytes_());
+  if (this->has_accent_plane_()) {
+    bool accent = ink == Ink::RED || ink == Ink::YELLOW;
+    memset(this->buffer_ + this->plane_bytes_(), accent ? 0xFF : 0x00, this->plane_bytes_());
+  }
+}
+
+// BWRY: picks the label's colour -> panel code table. A 0xB1 code_map wins
+// (firmware 3.0 stores it but leaves applying it to the host); otherwise the
+// built-in table for the panel IC.
+bool OpenDisplay::set_bwry_codes_(uint16_t panel_ic_type, const uint8_t *code_map) {
+  this->bwry_remap_ = false;
+  if (this->color_scheme_ != COLOR_SCHEME_BWRY)
+    return true;
+  const uint8_t *codes = panel_ic_type == PANEL_IC_EP29YR_128X296 ? BWRY_CODES_SWAPPED : BWRY_CODES_DEFAULT;
+  if (code_map != nullptr) {
+    uint8_t seen = 0;
+    for (int i = 0; i < 4; i++)
+      seen |= code_map[i] < 4 ? (1u << code_map[i]) : 0x10;
+    if (seen != 0x0F) {
+      ESP_LOGE(TAG, "The label's code_map %u,%u,%u,%u is not a permutation of 0..3", code_map[0], code_map[1],
+               code_map[2], code_map[3]);
+      this->finish_(false, "invalid BWRY code_map");
+      return false;
+    }
+    codes = code_map;
+  }
+  ESP_LOGD(TAG, "BWRY codes (black, white, yellow, red): %u, %u, %u, %u", codes[0], codes[1], codes[2], codes[3]);
+  if (memcmp(codes, BWRY_CODES_DEFAULT, 4) == 0)
+    return true;
+  uint8_t inverse[4];
+  for (uint8_t i = 0; i < 4; i++)
+    inverse[codes[i]] = i;
+  build_2bpp_lut(codes, this->bwry_lut_);
+  build_2bpp_lut(inverse, this->bwry_unlut_);
+  this->bwry_remap_ = true;
+  return true;
 }
 
 uint32_t OpenDisplay::buffer_hash_() const {
@@ -383,6 +696,7 @@ void OpenDisplay::begin_session_() {
   this->config_.clear();
   this->config_total_ = 0;
   this->transmission_modes_ = -1;
+  this->bwry_remap_ = false;
   this->set_state_(State::READ_CONFIG, TIMEOUT_COMMAND);
   this->send_command_(CMD_CONFIG_READ, nullptr, 0, false);
 }
@@ -482,8 +796,14 @@ void OpenDisplay::on_frame_(const uint8_t *data, uint16_t len) {
 //   no config: [FF][40][00][00]
 void OpenDisplay::on_config_frame_(const uint8_t *data, uint16_t len) {
   if (data[0] == RESP_NACK) {
-    ESP_LOGW(TAG, "Label has no stored config; cannot verify panel size");
-    this->start_upload_();
+    if (!this->panel_known_()) {
+      ESP_LOGE(TAG, "Label has no stored config; set width, height and color_scheme in the YAML");
+      this->finish_(false, "panel size unknown");
+      return;
+    }
+    ESP_LOGW(TAG, "Label has no stored config; using the YAML's %ux%u %s", this->width_, this->height_,
+             scheme_name(this->color_scheme_));
+    this->config_done_();
     return;
   }
   if (len < 4)
@@ -515,7 +835,7 @@ void OpenDisplay::on_config_frame_(const uint8_t *data, uint16_t len) {
 
   if (!this->check_config_())
     return;  // finish_() already called
-  this->start_upload_();
+  this->config_done_();
 }
 
 // Blob: [length:2 LE][version:1][packets...][crc:2]. Packets are
@@ -524,44 +844,63 @@ void OpenDisplay::on_config_frame_(const uint8_t *data, uint16_t len) {
 bool OpenDisplay::check_config_() {
   const auto &cfg = this->config_;
   if (cfg.size() < 5) {
-    ESP_LOGW(TAG, "Config too short (%u bytes); not verifying panel", (unsigned) cfg.size());
+    if (!this->panel_known_()) {
+      ESP_LOGE(TAG, "Config too short (%u bytes); set width, height and color_scheme in the YAML",
+               (unsigned) cfg.size());
+      this->finish_(false, "panel size unknown");
+      return false;
+    }
+    ESP_LOGW(TAG, "Config too short (%u bytes); using the YAML's panel", (unsigned) cfg.size());
     return true;
   }
+  // The first display packet and the code_map of display 0 are used.
+  const uint8_t *display = nullptr;
+  const uint8_t *code_map = nullptr;
   size_t off = 3, end = cfg.size() - 2;
   while (off + 2 <= end) {
     uint8_t type = cfg[off + 1];
     if (type >= LENGTH_PREFIXED_MIN_TYPE) {
       if (off + 4 > end)
         break;
-      off += 4 + (cfg[off + 2] | (cfg[off + 3] << 8));
+      size_t len = cfg[off + 2] | (cfg[off + 3] << 8);
+      const uint8_t *body = cfg.data() + off + 4;
+      if (off + 4 + len > end)
+        break;
+      if (type == PACKET_TYPE_DISPLAY_PANEL && code_map == nullptr && len >= DISPLAY_PANEL_CODE_MAP_OFFSET + 4 &&
+          body[0] == 0)
+        code_map = body + DISPLAY_PANEL_CODE_MAP_OFFSET;
+      off += 4 + len;
       continue;
     }
     int size = legacy_packet_size(type);
     if (size < 0 || off + 2 + size > end)
       break;
-    if (type == PACKET_TYPE_DISPLAY) {
-      const uint8_t *d = cfg.data() + off + 2;
-      uint16_t width = d[4] | (d[5] << 8);
-      uint16_t height = d[6] | (d[7] << 8);
-      uint8_t rotation = d[14];
-      uint8_t scheme = d[21];
-      this->transmission_modes_ = d[22];
-      ESP_LOGD(TAG, "Label reports %ux%u, colour scheme %u, rotation %u, transmission modes 0x%02X", width, height,
-               scheme, rotation, d[22]);
-      if (width != this->width_ || height != this->height_ || scheme != this->color_scheme_) {
-        ESP_LOGE(TAG,
-                 "Panel mismatch: label is %ux%u colour scheme %u (0=MONO 1=BWR 2=BWY), "
-                 "config says %ux%u %s. Fix width/height/color_scheme in the YAML.",
-                 width, height, scheme, this->width_, this->height_, scheme_name(this->color_scheme_));
-        this->finish_(false, "panel mismatch");
-        return false;
-      }
-      return true;
-    }
+    if (type == PACKET_TYPE_DISPLAY && display == nullptr)
+      display = cfg.data() + off + 2;
     off += 2 + size;
   }
-  ESP_LOGW(TAG, "No display packet found in the label's config; not verifying panel");
-  return true;
+
+  if (display == nullptr) {
+    if (!this->panel_known_()) {
+      ESP_LOGE(TAG, "No display packet in the label's config; set width, height and color_scheme in the YAML");
+      this->finish_(false, "panel size unknown");
+      return false;
+    }
+    ESP_LOGW(TAG, "No display packet in the label's config; using the YAML's panel");
+    return this->set_bwry_codes_(0, code_map);
+  }
+  const uint8_t *d = display;
+  uint16_t panel_ic_type = d[2] | (d[3] << 8);
+  uint16_t width = d[4] | (d[5] << 8);
+  uint16_t height = d[6] | (d[7] << 8);
+  uint8_t rotation = d[14];
+  uint8_t scheme = d[21];
+  this->transmission_modes_ = d[22];
+  ESP_LOGD(TAG, "Label reports panel IC %u, %ux%u, colour scheme %s (%u), rotation %u, transmission modes 0x%02X",
+           panel_ic_type, width, height, scheme_name(scheme), scheme, rotation, d[22]);
+  if (!this->adopt_panel_(width, height, scheme))
+    return false;  // finish_() already called
+  return this->set_bwry_codes_(panel_ic_type, code_map);
 }
 
 void OpenDisplay::send_next_chunk_() {
@@ -589,6 +928,13 @@ void OpenDisplay::send_end_() {
 // than the frame, and it fits the label's limit.
 void OpenDisplay::start_upload_() {
   const size_t raw_len = this->buffer_bytes_();
+  // BWRY: turn logical colours into this label's panel codes for the
+  // transfer; finish_() turns them back.
+  if (this->bwry_remap_ && !this->bwry_applied_) {
+    for (size_t i = 0; i < raw_len; i++)
+      this->buffer_[i] = this->bwry_lut_[this->buffer_[i]];
+    this->bwry_applied_ = true;
+  }
   bool modes_known = this->transmission_modes_ >= 0;
   bool streaming = modes_known && (this->transmission_modes_ & TRANSMISSION_STREAMING_DECOMPRESSION);
   bool label_can = !modes_known ||
