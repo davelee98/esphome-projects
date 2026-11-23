@@ -1,0 +1,167 @@
+# esk1 air epaper: SEN65 air quality on a 4.2" OpenDisplay e-paper ESL, from an
+# ESPHome Starter Kit (ESP32-C6).
+#   C6 module -> controller, ESP-IDF
+#   SEN65     -> I2C on GPIO1 (SDA) / GPIO0 (SCL)
+#   ESL       -> 4.2" OpenDisplay e-paper label over BLE (no wiring)
+#
+# The ESK-1 draws the page itself and pushes it to the label over BLE with the
+# local opendisplay component (components/opendisplay). It connects only for
+# an upload, then disconnects so the label can sleep. Unchanged frames are not
+# re-sent.
+#
+# No bluetooth_proxy here: Home Assistant's OpenDisplay integration could then
+# reach the same label through this device and the two would fight over it.
+substitutions:
+  # BLE address of the label (shown in the OpenDisplay app / HA, or in this
+  # device's log with esp32_ble_tracker at DEBUG).
+  esl_mac: "00:00:00:00:00:00"
+
+esphome:
+  name: esk1-air-epaper
+  friendly_name: esk1 air epaper
+  min_version: 2026.3.0          # sen6x
+
+esp32:
+  variant: esp32c6
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [opendisplay]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: esk1-air-epaper Fallback Hotspot
+    password: !secret esk1_air_epaper_ap_password
+
+api:
+  encryption:
+    key: !secret esk1_air_epaper_api_key
+
+ota:
+  - platform: esphome
+
+captive_portal:
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+ble_client:
+  - id: esl_client
+    mac_address: ${esl_mac}
+
+i2c:
+  - id: i2c_bus
+    sda: GPIO1
+    scl: GPIO0
+
+# sen6x ignores readings for 60 s after start-up, so the first values take
+# up to about 2 minutes.
+sensor:
+  - platform: sen6x
+    id: sen65
+    type: SEN65
+    update_interval: 60s
+    pm_1_0:
+      name: PM1.0
+      id: pm_1_0
+    pm_2_5:
+      name: PM2.5
+      id: pm_2_5
+    pm_4_0:
+      name: PM4.0
+      id: pm_4_0
+    pm_10_0:
+      name: PM10
+      id: pm_10_0
+    temperature:
+      name: Temperature
+      id: temperature
+    humidity:
+      name: Humidity
+      id: humidity
+    voc_index:
+      name: VOC Index
+      id: voc_index
+    nox_index:
+      name: NOx Index
+      id: nox_index
+
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: 60s
+    entity_category: diagnostic
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_label
+    size: 22
+  - file: "gfonts://Roboto@700"
+    id: font_value
+    size: 40
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+
+# The label's config is checked on every connection: if width, height or
+# color_scheme does not match the panel, the upload stops and the log gives
+# the label's real values.
+display:
+  - platform: opendisplay
+    id: epaper
+    ble_client_id: esl_client
+    width: 400
+    height: 300
+    color_scheme: MONO           # MONO, BWR or BWY
+    refresh_mode: FULL           # FULL or FAST
+    update_interval: 5min
+    # COLOR_ON is ink, COLOR_OFF is paper (the page is cleared to white).
+    lambda: |-
+      auto value = [&](float v, const char *fmt, char *buf, size_t n) {
+        if (std::isnan(v)) snprintf(buf, n, "--");
+        else snprintf(buf, n, fmt, v);
+        return buf;
+      };
+      char buf[16];
+
+      it.print(200, 6, id(font_label), TextAlign::TOP_CENTER, "Air Quality");
+      it.line(10, 36, 390, 36);
+
+      // Left column: particulates (ug/m3, rounded so small jitter does not
+      // trigger a new upload).
+      it.print(20, 50, id(font_label), "PM2.5");
+      it.print(20, 74, id(font_value), value(id(pm_2_5).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 130, id(font_label), "PM10");
+      it.print(20, 154, id(font_value), value(id(pm_10_0).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 210, id(font_small), "PM1.0");
+      it.print(90, 210, id(font_small), value(id(pm_1_0).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 232, id(font_small), "PM4.0");
+      it.print(90, 232, id(font_small), value(id(pm_4_0).state, "%.0f", buf, sizeof(buf)));
+      it.print(20, 254, id(font_small), "ug/m3");
+
+      it.line(200, 46, 200, 270);
+
+      // Right column: gas indices and climate.
+      it.print(220, 50, id(font_label), "VOC");
+      it.print(220, 74, id(font_value), value(id(voc_index).state, "%.0f", buf, sizeof(buf)));
+      it.print(220, 130, id(font_label), "NOx");
+      it.print(220, 154, id(font_value), value(id(nox_index).state, "%.0f", buf, sizeof(buf)));
+      it.print(220, 210, id(font_small), "Temp");
+      it.print(300, 210, id(font_small), value(id(temperature).state, "%.1f C", buf, sizeof(buf)));
+      it.print(220, 232, id(font_small), "Humidity");
+      it.print(300, 232, id(font_small), value(id(humidity).state, "%.0f %%", buf, sizeof(buf)));
+
+button:
+  - platform: template
+    name: Refresh E-Paper
+    on_press:
+      - component.update: epaper
