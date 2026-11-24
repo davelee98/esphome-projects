@@ -115,17 +115,20 @@ Canvas render(const Snapshot &s) {
 }  // namespace
 
 TEST(render_field_widths) {
-  CHECK_EQ(value_field_width(Metric::PM2_5), 88);
-  CHECK_EQ(value_field_width(Metric::PM10), 96);
-  CHECK_EQ(value_field_width(Metric::PM1), 104);
-  CHECK_EQ(value_field_width(Metric::TEMP), 96);
-  CHECK_EQ(value_field_width(Metric::CO2), 110);
-  CHECK_EQ(value_field_width(Metric::VOC), 110);
-  CHECK_EQ(value_field_width(Metric::NOX), 110);
-  CHECK_EQ(value_field_width(Metric::HUM), 110);
-  CHECK(value_fits(Metric::PM2_5, "99999"));
-  CHECK(!value_fits(Metric::PM2_5, "100000"));
-  CHECK(value_fits(Metric::TEMP, "-100.5"));
+  // Labels are 24 px bold, 12 px per glyph.
+  CHECK_EQ(value_field_width(Metric::PM2_5), 68);
+  CHECK_EQ(value_field_width(Metric::PM10), 80);
+  CHECK_EQ(value_field_width(Metric::PM1), 92);
+  CHECK_EQ(value_field_width(Metric::TEMP), 80);
+  CHECK_EQ(value_field_width(Metric::CO2), 98);
+  CHECK_EQ(value_field_width(Metric::VOC), 98);
+  CHECK_EQ(value_field_width(Metric::NOX), 98);
+  CHECK_EQ(value_field_width(Metric::HUM), 98);
+  CHECK(value_fits(Metric::PM2_5, "1000"));  // the SEN65's top of range
+  CHECK(!value_fits(Metric::PM2_5, "10000"));
+  CHECK(value_fits(Metric::TEMP, "-10.5"));
+  CHECK(value_fits(Metric::TEMP, "104.0"));
+  CHECK(!value_fits(Metric::TEMP, "-100.5"));
   CHECK(value_fits(Metric::CO2, "9999"));
   CHECK(value_fits(Metric::CO2, "999999"));
   CHECK(!value_fits(Metric::CO2, "1000000"));
@@ -136,10 +139,14 @@ TEST(render_text_metrics) {
   CHECK_EQ(centered_top(FONT_TEXT14, "PM2.5", 70), 63);
   CHECK_EQ(centered_top(FONT_BOLD32, "12", 70), 54);
   CHECK_EQ(measure_text(FONT_TEXT14, "\xC2\xB0" "C"), 16);  // the degree sign is one glyph
+  CHECK_EQ(measure_text(FONT_TEXT24, "\xC2\xB0" "C"), 24);
+  CHECK_EQ(measure_text(FONT_TEXT24, "PM2.5"), 60);
   CHECK_EQ(utf8_length("\xC2\xB5g/m\xC2\xB3"), 5u);
   CHECK(find_glyph(FONT_BOLD32, '?') == nullptr);
   CHECK(find_glyph(FONT_TEXT14, 0xB0) != nullptr);
   CHECK_EQ(FONT_TEXT14.glyph_count, 98);
+  CHECK_EQ(FONT_TEXT24.glyph_count, 98);
+  CHECK(find_glyph(FONT_TEXT24, 0xB0) != nullptr);
   CHECK_EQ(FONT_BOLD32.glyph_count, 17);
   // Malformed UTF-8 becomes U+FFFD, drawn as '?'.
   const char bad[] = "\xC3";
@@ -220,8 +227,8 @@ TEST(render_states_and_colors) {
   CHECK_EQ(c.count(12, 40, 196, 100, Ink::BLACK), 0);
   CHECK(c.count(12, 40, 196, 100, Ink::WHITE) > 100);
   CHECK(c.count(158, 64, 188, 76, Ink::WHITE) > 20);  // the sprite is white on red
-  // Elevated (yellow): red label, black value.
-  CHECK(c.count(204, 104, 388, 164, Ink::RED) > 20);
+  // Elevated (yellow): label and value black, no red.
+  CHECK_EQ(c.count(204, 104, 388, 164, Ink::RED), 0);
   CHECK(c.count(204, 104, 388, 164, Ink::BLACK) > 50);
   CHECK_EQ(c.count(204, 104, 388, 164, Ink::WHITE), 0);
   // Fault (yellow "--"), unit "idx" still visible.
@@ -261,11 +268,11 @@ TEST(render_header_titles_and_stamps) {
   snprintf(s.stamp, sizeof(s.stamp), "-- --- --:--");
   Canvas c = render(s);
   c.write_pnm("header_long_title");
-  // 21 glyphs + "..." = 24 glyphs = 192 px from x = 12.
+  // 13 glyphs + "..." = 16 glyphs of 12 px = 192 px from x = 12.
   CHECK(c.rightmost(0, 0, 220, 30, Ink::BLACK) < 12 + 192);
   CHECK(c.rightmost(0, 0, 400, 30, Ink::BLACK) < 388);
   int stamp_left = c.leftmost(220, 0, 400, 30, Ink::BLACK);
-  CHECK(stamp_left >= 388 - 12 * 8);
+  CHECK(stamp_left >= 388 - 12 * 12);
 
   snprintf(s.title, sizeof(s.title), "K\xC3\xBC" "che");  // u-umlaut is not in the font
   snprintf(s.stamp, sizeof(s.stamp), "NO SAMPLE YET");
@@ -286,10 +293,14 @@ TEST(render_sensor_missing) {
   CHECK(c.count(200, 0, 400, 30, Ink::RED) > 50);
   CHECK_EQ(c.count(200, 0, 400, 30, Ink::BLACK), 0);
   CHECK(c.rightmost(200, 0, 400, 30, Ink::RED) < 388);
-  CHECK(c.leftmost(200, 0, 400, 30, Ink::RED) >= 388 - 14 * 8);
+  CHECK(c.leftmost(200, 0, 400, 30, Ink::RED) >= 388 - 14 * 12);
   CHECK(c.count(0, 0, 120, 30, Ink::BLACK) > 20);
   CHECK(c.ink(12, 40) == Ink::YELLOW);
   CHECK(c.ink(204, 40) == Ink::WHITE);  // CO2 is not the SEN65's
+  // Yellow cells carry black text only: the whole left column has no red.
+  CHECK_EQ(c.count(12, 40, 196, 292, Ink::RED), 0);
+  CHECK(c.count(12, 40, 196, 292, Ink::BLACK) > 200);
+  CHECK(c.count(204, 40, 388, 100, Ink::RED) > 10);  // white CO2 keeps its red label
   CHECK(c.canary_intact());
 }
 

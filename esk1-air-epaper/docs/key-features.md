@@ -46,7 +46,7 @@ the project name: the page shows individual readings, not an official AQI.
   `SENSOR ERROR` (it worked, now reads fail), and its cells turn yellow `--`.
   Then a black rule.
 - **Eight equal cells, 184×60.** PM2.5 | CO2, PM10 | VOC, PM1 | NOx,
-  TEMP | HUM. Each has a red label, a bold 32 px value and its unit (`µg/m³`
+  TEMP | HUM. Each has a label (red; black on yellow, white on red), a bold 32 px value and its unit (`µg/m³`
   bitmap, `ppm`, `idx`, `°C`/`°F`, `%`). PM4 is reported to Home Assistant
   but not drawn.
 - **Cell colour is the state:**
@@ -64,11 +64,11 @@ the project name: the page shows individual readings, not an official AQI.
 - **Levels with hysteresis.** Entering and leaving a level use different
   thresholds, and a new level must hold for 3 minutes of fresh readings
   first. These are project event bands for tuning, not health limits.
-- **Fonts.** Native Terminus bitmaps only: normal 14 px text and bold 32 px
-  numbers, copied byte for byte from the BDF files by
+- **Fonts.** Native Terminus bitmaps only: bold 24 px header, labels, `°C`
+  and `%`; normal 14 px `ppm` and `idx`; bold 32 px numbers, copied byte for byte from the BDF files by
   [build_display_fonts.py](../tools/build_display_fonts.py) into
-  `components/aqi_dashboard/dashboard_assets.cpp` (about 4.3 KB of flash with the
-  PM sprite). The 24 px font and the ESPHome `font:` assets are not linked.
+  `components/aqi_dashboard/dashboard_assets.cpp` (about 10.4 KB of flash with the
+  PM sprite). The 24 px numeric table and the ESPHome `font:` assets are not linked.
 
 ### When the label refreshes
 
@@ -82,12 +82,26 @@ sampled every 60 s but the panel refreshes rarely:
 | A meaningful number change (PM ±max(2, 20 %), VOC 25, NOx 10, CO2 100, temperature 0.5 °C, humidity 3) | 30 min after the last successful refresh |
 | Heartbeat | 60 min after the last successful refresh, even if nothing changed |
 | **Refresh E-Paper** button | At once, but never within 15 min of the last refresh |
+| **Test Mixed** / **Test High** buttons | Like Refresh; one page of the live readings in a fixed pattern of colours (below) |
 | Failure | Retry after 2, then 5, then every 15 min |
 
 Every threshold and interval is in the YAML (`timing`, `deadbands`, `bands`).
 The page being sent is frozen, so readings that arrive during an upload wait
 for the next one. A page only counts as displayed when the label confirms the
 refresh.
+
+The two test buttons (diagnostic entities) check the inks on the panel
+without polluted air. Each sends one page with the real readings, recoloured:
+
+| Button | Red | Yellow | White |
+|---|---|---|---|
+| **Test Mixed** | PM2.5, PM10, PM1 | VOC, NOx, HUM | CO2, TEMP |
+| **Test High** | PM2.5, PM10, PM1, VOC | NOx | CO2, TEMP, HUM |
+
+Cells showing `--` or `----` keep their real state. Once the label shows the
+test page, the pattern is dropped: the real colours differ from it, so the
+next page (a state change, after the 15 min guard) restores them. A failed
+test upload is retried as a test page.
 
 ## The `opendisplay` component
 

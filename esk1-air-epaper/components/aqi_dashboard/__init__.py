@@ -61,9 +61,9 @@ DASHBOARD_SENSORS = {
 }
 REQUIRED_SENSORS = [k for k in DASHBOARD_SENSORS if k != "co2"]
 
-# Glyphs of the 14 px text font: ASCII 0x20-0x7E plus degree, micro, superscript 3.
+# Glyphs of the 24 px header font (same set as 14 px): ASCII 0x20-0x7E plus degree, micro, superscript 3.
 TEXT_GLYPHS = {chr(c) for c in range(0x20, 0x7F)} | {"°", "µ", "³"}
-TITLE_MAX_GLYPHS = 24
+TITLE_MAX_GLYPHS = 16
 
 # Event bands (spec section 4.3): (classifier, enabled, enter_yellow,
 # enter_red, leave_yellow, leave_red). CO2 is off by default even when bound.
@@ -80,7 +80,7 @@ def validate_title(value):
     bad = sorted({c for c in value if c not in TEXT_GLYPHS})
     if bad:
         raise cv.Invalid(
-            f"title has characters the 14 px font lacks: {''.join(bad)!r} "
+            f"title has characters the header font lacks: {''.join(bad)!r} "
             "(use ASCII, plus degree, micro and superscript 3)"
         )
     if len(value) > TITLE_MAX_GLYPHS:

@@ -82,6 +82,25 @@ void AqiDashboard::request_manual() {
   this->scheduler_.request_manual();
 }
 
+void AqiDashboard::show_test_pattern(TestPattern pattern) {
+  ESP_LOGI(TAG, "Test page '%s' requested: real readings, test colours, for one page", test_pattern_name(pattern));
+  this->test_pattern_ = pattern;
+  this->scheduler_.request_manual();
+}
+
+// Called when an upload finished with the page on the label (sent or already
+// there): a test page has been shown once, so the next page is the real one.
+void AqiDashboard::test_page_shown_() {
+  TestPattern shown = this->test_in_flight_;
+  this->test_in_flight_ = TestPattern::NONE;
+  if (shown == TestPattern::NONE)
+    return;
+  ESP_LOGI(TAG, "Test page '%s' shown; the next update restores the real colours", test_pattern_name(shown));
+  // A different pattern requested during the upload still gets its page.
+  if (this->test_pattern_ == shown)
+    this->test_pattern_ = TestPattern::NONE;
+}
+
 void AqiDashboard::on_sample_(Metric metric, float value) {
   uint32_t now = millis();
   this->model_.on_sample(metric, value, now);
@@ -140,6 +159,7 @@ void AqiDashboard::build_latest_(uint32_t now_ms) {
   }
   this->model_.set_sen65_fault(error != nullptr);
   this->model_.build(now_ms, &this->latest_);
+  apply_test_pattern(this->test_pattern_, &this->latest_);
   snprintf(this->latest_.title, sizeof(this->latest_.title), "%s", this->title_.c_str());
   if (error != nullptr) {
     snprintf(this->latest_.stamp, sizeof(this->latest_.stamp), "%s", error);
@@ -179,6 +199,9 @@ void AqiDashboard::tick_() {
   }
   this->last_reasons_ = 0;
   this->last_waiting_ = nullptr;
+  // The frozen page carries the pattern; a press during this upload applies
+  // to the next one instead.
+  this->test_in_flight_ = this->test_pattern_;
 
   UploadStart started = this->display_->request_upload(d.force);
   switch (started) {
@@ -187,6 +210,7 @@ void AqiDashboard::tick_() {
     case UploadStart::UNCHANGED:
       ESP_LOGD(TAG, "Page identical to the one displayed");
       this->scheduler_.on_complete(Outcome::UNCHANGED, millis(), false, 0);
+      this->test_page_shown_();
       break;
     default:
       ESP_LOGW(TAG, "Upload could not start (%s)",
@@ -201,8 +225,10 @@ void AqiDashboard::on_complete_(od::Result result, bool has_marker, uint32_t mar
                                : result == od::Result::FAILED_UNCERTAIN ? Outcome::FAILED_UNCERTAIN
                                                                         : Outcome::FAILED_NOT_SENT;
   this->scheduler_.on_complete(outcome, millis(), has_marker, marker_ms);
-  if (outcome == Outcome::SUCCESS)
+  if (outcome == Outcome::SUCCESS) {
     ESP_LOGI(TAG, "Page displayed");
+    this->test_page_shown_();
+  }
 }
 
 void AqiDashboard::put_pixel_(void *context, int x, int y, Ink ink) {

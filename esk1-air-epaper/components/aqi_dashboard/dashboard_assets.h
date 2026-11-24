@@ -27,6 +27,7 @@ struct Sprite {
 };
 
 extern const Font FONT_TEXT14;   /* ter-u14n: ASCII 0x20-0x7E plus degree, micro, superscript 3 */
+extern const Font FONT_TEXT24;   /* ter-u24b: the same set, bold; header, labels, degree and % units */
 extern const Font FONT_BOLD32;   /* ter-u32b: 0123456789.- degree F C % */
 extern const Sprite SPRITE_PM_UNITS; /* "ug/m3" in Terminus 6x12, one line */
 

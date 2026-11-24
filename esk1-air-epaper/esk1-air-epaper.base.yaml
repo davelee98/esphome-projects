@@ -184,12 +184,13 @@ display:
 # The page: the AQI dashboard (components/aqi_dashboard). It draws through
 # the epaper display above and decides when the label refreshes.
 aqi_dashboard:
+  id: dashboard
   display_id: epaper
   time_id: ha_time           # the Timezone select sets its zone
   # A missing or failing SEN65 shows SENSOR MISSING / SENSOR ERROR in red
   # in the header, and its cells turn yellow "--".
   sen6x_id: sen65
-  title: INDOOR AIR          # up to 24 characters
+  title: INDOOR AIR          # up to 16 characters
   temperature_unit: C        # C or F
   sensors:
     pm_2_5: pm_2_5
@@ -228,6 +229,21 @@ button:
     name: Refresh E-Paper
     on_press:
       - component.update: epaper
+  # Test pages: the live readings in fixed cell colours, to check the inks on
+  # the panel. Like Refresh they wait out the 15 min guard; the page after the
+  # test one restores the real colours. Cells showing "--" keep their state.
+  - platform: template
+    name: Test Mixed
+    icon: mdi:palette
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(dashboard).show_test_pattern(aqi_dashboard::TestPattern::MIXED);
+  - platform: template
+    name: Test High
+    icon: mdi:palette
+    entity_category: diagnostic
+    on_press:
+      - lambda: id(dashboard).show_test_pattern(aqi_dashboard::TestPattern::HIGH);
 
 # The label's BLE name, editable on the web page and in Home Assistant. The
 # value is kept across reboots; esl_name above is only the first-boot default.

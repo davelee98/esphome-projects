@@ -45,11 +45,21 @@ struct Cell {
 // upload and compared with what was last displayed (section 5.3).
 struct Snapshot {
   Cell cells[METRIC_COUNT];  // indexed by Metric
-  char title[80];            // UTF-8, 24 glyphs at most (validated in display.py)
+  char title[80];            // UTF-8, 16 glyphs at most (validated in display.py)
   char stamp[24];            // frozen header stamp
   bool stamp_alert;          // the stamp is a sensor error ("SENSOR MISSING" / "SENSOR ERROR"), drawn red
   bool fahrenheit;
 };
+
+// Test pages (the Test Mixed / Test High buttons): the real readings drawn
+// with a fixed pattern of cell colours, for checking the inks on the panel.
+//   MIXED: PM2.5, PM10, PM1 red; VOC, NOx, HUM yellow; CO2, TEMP white.
+//   HIGH:  PM2.5, PM10, PM1, VOC red; NOx yellow; CO2, TEMP, HUM white.
+// Only cells holding a value are recoloured; "--" and "----" cells keep their
+// real state, so a test page never shows a missing reading as a measurement.
+enum class TestPattern : uint8_t { NONE, MIXED, HIGH };
+const char *test_pattern_name(TestPattern p);
+void apply_test_pattern(TestPattern p, Snapshot *s);
 
 // Event bands (section 4.3). Entry and exit thresholds give hysteresis.
 struct Bands {

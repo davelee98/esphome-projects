@@ -27,7 +27,7 @@ air-quality index.
 | Palette | Black, white, red and yellow; no intermediate shades |
 | Transport | OpenDisplay DIRECT_WRITE over BLE; complete frames |
 | Rendering | Solid rectangles, one horizontal rule, native monochrome glyphs and one PM-unit bitmap |
-| Fonts | One family, Terminus; two runtime assets: normal 14 px and bold 32 px |
+| Fonts | One family, Terminus; three runtime assets: normal 14 px, bold 24 px and bold 32 px |
 | Panel refresh | Approximately 30 seconds on the target BWRY panel, as observed by the project owner |
 | Sensor sampling | Keep the existing 60-second SEN65 sampling interval |
 | Data publishing | Keep all existing sensor reporting, including PM4, independent of display refresh |
@@ -57,14 +57,17 @@ All rectangles use half-open bounds: `(x, y, width, height)` covers
 | Element | Position and rendering |
 |---|---|
 | Background | Fill `(0, 0, 400, 300)` white before drawing anything else |
-| Room title | Text top origin `(12, 7)`, Terminus normal 14, black, left aligned; default `INDOOR AIR` |
-| Sample stamp | Text top origin `(388, 7)`, Terminus normal 14, black, right aligned |
+| Room title | Text top origin `(12, 3)`, Terminus bold 24, black, left aligned; default `INDOOR AIR` |
+| Sample stamp | Text top origin `(388, 3)`, Terminus bold 24, black, right aligned |
 | Stamp format | `DD MON HH:MM`, for example `23 NOV 14:35`; uppercase English month abbreviation and 24-hour clock |
 | Header rule | Fill `(12, 30, 376, 1)` black; last painted pixel is `(387, 30)` |
 
-Keep the title and stamp on one line. Limit the configurable title to 24
+Keep the title and stamp on one line. Limit the configurable title to 16
 supported characters; shorten longer titles with three ASCII periods within
-that limit. Do not overlap the stamp. There is no SEN65 label, footer,
+that limit. Do not overlap the stamp: 16 glyphs at the 12-pixel advance end at
+x = 204, and the widest stamp, `SENSOR MISSING`, starts at x = 220. With its
+top at y = 3 the 24-pixel line's capitals span y = 7–21 and its descenders end
+at y = 26, clear of the rule at y = 30. There is no SEN65 label, footer,
 connectivity icon or visible status sentence, with one exception: when the
 SEN65 is missing or failing, the stamp is replaced by `SENSOR MISSING` (not
 detected at start-up, or never reported) or `SENSOR ERROR` (reported before,
@@ -110,8 +113,8 @@ left-aligned unit**. All three are vertically centered at `cell_y + 30`.
 Keep the selected 8-pixel inner horizontal padding.
 
 Render all eight metric labels (`PM2.5`, `PM10`, `PM1`, `CO2`, `VOC`, `NOx`,
-`TEMP` and `HUM`) in red by default, including on yellow cells. On red cells,
-render the label in white so it remains visible. This label color is a fixed
+`TEMP` and `HUM`) in red on white cells. On yellow cells render the label in
+black, since red on yellow reads poorly; on red cells, render it in white. This label color is a fixed
 style, not a concentration status indicator. Values and units retain their
 state-dependent colors. The header title, timestamp and rule remain black.
 
@@ -138,15 +141,19 @@ value_right = unit_x - 6;
 available_value_width = value_right - (label_x + label_width + 4);
 ```
 
-At the 14-pixel font's 8-pixel advance, the available numeric widths are:
+Labels are Terminus bold 24. At its 12-pixel advance, the available numeric
+widths are:
 
 | Label | Available pixels | Characters at 32 px |
 |---|---:|---:|
-| PM2.5 | 88 | 5 |
-| PM10 | 96 | 6 |
-| PM1 | 104 | 6 |
-| TEMP | 96 | 6 |
-| CO2 / VOC / NOx / HUM | 110 | 6 |
+| PM2.5 | 68 | 4 |
+| PM10 | 80 | 5 |
+| PM1 | 92 | 5 |
+| TEMP | 80 | 5 |
+| CO2 / VOC / NOx / HUM | 98 | 6 |
+
+Four PM2.5 digits cover the SEN65's 0–1,000 µg/m³ range; five TEMP characters
+cover `-10.5` and `104.0`.
 
 Always use native 32-pixel bold at scale 1 for readings. A four-digit CO2 value
 such as `9999` needs only 64 pixels and fits without any layout change.
@@ -158,7 +165,7 @@ If the complete formatted value exceeds the available width, show the error
 marker `----` in 32-pixel bold at the same right anchor and record an overflow
 diagnostic. Its four glyphs occupy 64 pixels and fit every cell. This is
 distinct from the `--` missing-value marker and needs no additional glyphs.
-Use a yellow background with a red label and black value and unit. Keep the unit visible,
+Use a yellow background with a black label, value and unit. Keep the unit visible,
 including the PM sprite, to identify the affected measurement. Do not fall back
 to 24 px, reduce padding, truncate digits or scale the bitmap. Preserve the raw
 reading and its concentration category in telemetry; only its display state
@@ -176,10 +183,11 @@ integer-multiple scaling experiments. Do not synthesize bold or resample.
 
 | Runtime role | Source | Cell / advance | Baseline from text top | Glyphs | Bitmap bytes |
 |---|---|---|---:|---:|---:|
-| Header, labels, text units | `ter-u14n.bdf` | 8 × 14 / 8 | 12 | 98 | 1,372 |
+| `ppm` and `idx` units | `ter-u14n.bdf` | 8 × 14 / 8 | 12 | 98 | 1,372 |
+| Header, labels, `°C`/`°F` and `%` units | `ter-u24b.bdf` | 12 × 24 / 12 | 19 | 98 | 4,704 |
 | Main numeric values | `ter-u32b.bdf` | 16 × 32 / 16 | 26 | 17 | 1,088 |
 
-The text subset is ASCII U+0020 through U+007E plus `°`, `µ` and `³`.
+Both text subsets are ASCII U+0020 through U+007E plus `°`, `µ` and `³`.
 The exact numeric subset is `0123456789.- °FC%`, including the space. The
 numeric assets support missing values, decimals and negative temperatures.
 Units are nevertheless rendered separately in the small font or PM bitmap.
@@ -206,10 +214,10 @@ on the same line as label and number. Omit the sprite when the PM value is
 | Reading | Unit asset | Unit origin x |
 |---|---|---:|
 | PM2.5, PM10, PM1 | 30 × 12 PM sprite | 158 |
-| TEMP | `°C` or `°F`, normal 14 | 158 |
+| TEMP | `°C` or `°F`, bold 24 | 158 |
 | CO2 | `ppm`, normal 14 | 356 |
 | VOC, NOx | `idx`, normal 14 | 356 |
-| HUM | `%`, normal 14 | 356 |
+| HUM | `%`, bold 24 | 356 |
 
 Text units remain visible beside `--`. Do not write `INDEX` or append a unit
 to a large numeric string. The optional climate icon assets are not used.
@@ -227,12 +235,11 @@ BDF bitmap rows directly. Pillow is needed for its PNG output. The generated
 [display-glyphs.json](../fonts/display-glyphs.json) supplies all three fonts to
 the preview; [numeric-glyphs.h](../fonts/numeric-glyphs.h) currently supplies
 only the two numeric fonts to a C renderer. Those existing files still contain
-the earlier 24-pixel fallback; the target dashboard uses only 14 and 32 px.
+the earlier 24-pixel numeric fallback, which the dashboard does not use.
 
-Before implementing the standalone primitive renderer, extend the generator to
-emit an equivalent 14-pixel C table and a dashboard asset set containing only
-the 14- and 32-pixel fonts. Exclude the unused 24-pixel table from the linked
-dashboard build. JSON, BDF and PNG parsing belong on the
+The generator's `--dashboard` output holds the 14-pixel and 24-pixel text
+tables and the 32-pixel numeric table. The 17-glyph 24-pixel numeric table is
+not linked into the dashboard build. JSON, BDF and PNG parsing belong on the
 development computer, never on the microcontroller. Include generated static
 arrays in one translation unit, with declarations elsewhere, to prevent
 duplicate copies. Do not also compile duplicate ESPHome font assets if the
@@ -278,13 +285,13 @@ An external CO2 source can be fresh when the SEN65 is stale, or vice versa.
 | State | Cell background | Label | Value and unit | Value |
 |---|---|---|---|---|
 | Normal valid reading | White | Red | Black | Formatted reading |
-| Elevated valid reading | Yellow | Red | Black | Formatted reading |
+| Elevated valid reading | Yellow | Black | Black | Formatted reading |
 | High valid reading | Red | White | White | Formatted reading |
 | Starting / never sampled | White | Red | Black | `--` |
 | Optional source not configured | White | Red | Black | `--` |
-| Configured source stale, invalid or faulted | Yellow | Red | Black | `--` |
-| Formatted reading exceeds the 32-pixel field capacity | Yellow | Red | Black | `----` |
-| SEN65 missing or failing (header shows the error) | Yellow | Red | Black | `--` for each SEN65 cell without a current reading |
+| Configured source stale, invalid or faulted | Yellow | Black | Black | `--` |
+| Formatted reading exceeds the 32-pixel field capacity | Yellow | Black | Black | `----` |
+| SEN65 missing or failing (header shows the error) | Yellow | Black | Black | `--` for each SEN65 cell without a current reading |
 
 Apart from the header's sensor error, there are no visible status words. A
 SEN65 that is merely warming up, or stale without read errors, is not an
@@ -568,23 +575,24 @@ panel-specific waveform is deliberately configured.
 
 ## 7. Flash and RAM budget
 
-The target 14- and 32-pixel glyph pixels total 2,460 bytes. Including the PM
-sprite gives 2,508 bytes. The existing development assets also contain an
-unused 24-pixel font, which must be excluded from the dashboard build.
+The 14-pixel, 24-pixel and 32-pixel glyph pixels total 7,164 bytes. Including
+the PM sprite gives 7,212 bytes. The 24-pixel numeric development table is
+excluded from the dashboard build.
 For a compact C table matching the current numeric glyph struct,
 the estimated static data is:
 
 | Item | Bytes |
 |---|---:|
 | 14-pixel text glyph pixels | 1,372 |
+| 24-pixel bold text glyph pixels | 4,704 |
 | 32-pixel numeric glyph pixels | 1,088 |
 | PM sprite pixels | 48 |
-| 115 glyph records × 16 bytes | 1,840 |
-| Two font descriptors × 16 bytes | 32 |
-| **Total font and sprite data** | **4,380 bytes, approximately 4.28 KiB** |
+| 213 glyph records × 16 bytes | 3,408 |
+| Three font descriptors × 16 bytes | 48 |
+| **Total font and sprite data** | **10,668 bytes, approximately 10.4 KiB** |
 
 This assumes 32-bit pointers, the current 16-byte glyph layout and an equivalent
-16-byte descriptor for the text font. Confirm `sizeof` on ESP32 and check the
+16-byte descriptor for each text font. Confirm `sizeof` on ESP32 and check the
 linked map file; this is not a measurement of total firmware growth. Renderer
 code, strings, layout descriptors and alignment add flash. A different ESPHome
 font representation has different metadata overhead. BDF, JSON, HTML and PNG
@@ -682,8 +690,8 @@ and requests one full refresh. A sensor tick alone must not turn Bluetooth on.
 - Verify `°C`, `°F`, `%`, `idx`, `ppm` and the PM sprite on white, yellow and
   red fills. Zero bits must preserve the background. Verify row padding and
   edge clipping with canary bytes around the host buffer.
-- Verify all eight metric labels are red on white and yellow, including missing
-  and overflow states, and white on red. Values and units remain black on white
+- Verify all eight metric labels are red on white, black on yellow (including
+  missing and overflow states), and white on red. Values and units remain black on white
   and yellow, and white on red. Header text and rule remain black.
 - Check long and unsupported room titles, missing time and sample time around
   midnight. Header layout must remain bounded and use only supported glyphs.

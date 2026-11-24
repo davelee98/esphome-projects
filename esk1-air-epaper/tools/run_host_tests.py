@@ -133,6 +133,7 @@ def check_assets():
     problems = 0
     expected = {
         "TEXT14": ("ter-u14n.bdf", [*range(0x20, 0x7F), 0xB0, 0xB5, 0xB3], 1372),
+        "TEXT24": ("ter-u24b.bdf", [*range(0x20, 0x7F), 0xB0, 0xB5, 0xB3], 4704),
         "BOLD32": ("ter-u32b.bdf", [ord(c) for c in "0123456789.- °FC%"], 1088),
     }
     for name, (bdf, codepoints, total) in expected.items():

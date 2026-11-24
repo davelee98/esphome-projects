@@ -36,6 +36,34 @@ const char *state_name(CellState s) {
   return "?";
 }
 
+const char *test_pattern_name(TestPattern p) {
+  switch (p) {
+    case TestPattern::MIXED:
+      return "mixed";
+    case TestPattern::HIGH:
+      return "high";
+    case TestPattern::NONE:
+    default:
+      return "none";
+  }
+}
+
+void apply_test_pattern(TestPattern p, Snapshot *s) {
+  using S = CellState;
+  // Indexed by Metric: PM2.5, PM10, PM1, CO2, VOC, NOx, TEMP, HUM.
+  static const S MIXED[METRIC_COUNT] = {S::HIGH, S::HIGH, S::HIGH, S::NORMAL,
+                                        S::ELEVATED, S::ELEVATED, S::NORMAL, S::ELEVATED};
+  static const S HIGH[METRIC_COUNT] = {S::HIGH, S::HIGH, S::HIGH, S::NORMAL,
+                                       S::HIGH, S::ELEVATED, S::NORMAL, S::NORMAL};
+  if (s == nullptr || p == TestPattern::NONE)
+    return;
+  const S *pattern = p == TestPattern::MIXED ? MIXED : HIGH;
+  for (size_t i = 0; i < METRIC_COUNT; i++) {
+    if (state_has_value(s->cells[i].state))
+      s->cells[i].state = pattern[i];
+  }
+}
+
 Category classify(Category current, float value, const Bands &b) {
   switch (current) {
     case Category::NORMAL:

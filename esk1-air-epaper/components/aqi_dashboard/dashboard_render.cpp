@@ -191,7 +191,10 @@ static const CellLayout CELLS[METRIC_COUNT] = {
 static constexpr int INNER_PADDING = 8;    // label_x = x + 8; inner right = x + 176
 static constexpr int UNIT_GAP = 6;         // value advance box to unit origin
 static constexpr int LABEL_GAP = 4;        // label advance box to value advance box, minimum
-static constexpr int TITLE_MAX_GLYPHS = 24;
+// 16 glyphs of 12 px end at x = 204, clear of the widest stamp
+// ("SENSOR MISSING", 168 px, from x = 220).
+static constexpr int TITLE_MAX_GLYPHS = 16;
+static constexpr int HEADER_TOP = 3;  // 24 px text: caps 7..21, descenders to 26, rule at 30
 
 const CellLayout &cell_layout(size_t index) { return CELLS[index < METRIC_COUNT ? index : 0]; }
 
@@ -207,7 +210,7 @@ static int value_right_of(const CellLayout &c) { return unit_x_of(c) - UNIT_GAP;
 
 int value_field_width(Metric metric) {
   const CellLayout &c = cell_layout_for(metric);
-  int label_end = c.x + INNER_PADDING + measure_text(FONT_TEXT14, c.label);
+  int label_end = c.x + INNER_PADDING + measure_text(FONT_TEXT24, c.label);
   return value_right_of(c) - (label_end + LABEL_GAP);
 }
 
@@ -226,7 +229,7 @@ static CellInks inks_for(CellState state) {
     case CellState::ELEVATED:
     case CellState::FAULT:
     case CellState::OVERFLOW:
-      return {Ink::YELLOW, Ink::RED, Ink::BLACK};
+      return {Ink::YELLOW, Ink::BLACK, Ink::BLACK};  // red on yellow reads poorly
     case CellState::HIGH:
       return {Ink::RED, Ink::WHITE, Ink::WHITE};
     case CellState::NORMAL:
@@ -254,7 +257,7 @@ static const char *text_unit(Metric m, bool fahrenheit) {
 
 static bool is_pm(Metric m) { return m == Metric::PM2_5 || m == Metric::PM10 || m == Metric::PM1; }
 
-// The title, shortened to 24 glyphs with "..." (section 2.1).
+// The title, shortened to 16 glyphs with "..." (section 2.1).
 static void shorten_title(const char *title, char *out, size_t size) {
   out[0] = '\0';
   if (title == nullptr || size == 0)
@@ -278,7 +281,7 @@ static void draw_cell(const Raster &r, const CellLayout &c, const Cell &cell, bo
   fill_rect(r, c.x, c.y, CELL_WIDTH, CELL_HEIGHT, inks.background);
   const int center_y = c.y + CELL_HEIGHT / 2;
 
-  draw_text(r, FONT_TEXT14, c.x + INNER_PADDING, centered_top(FONT_TEXT14, c.label, center_y), c.label, inks.label);
+  draw_text(r, FONT_TEXT24, c.x + INNER_PADDING, centered_top(FONT_TEXT24, c.label, center_y), c.label, inks.label);
 
   // The snapshot decided overflow already; never draw a value wider than its
   // field, whatever the caller passed.
@@ -297,7 +300,9 @@ static void draw_cell(const Raster &r, const CellLayout &c, const Cell &cell, bo
     }
   } else {
     const char *unit = text_unit(c.metric, fahrenheit);
-    draw_text(r, FONT_TEXT14, unit_x, centered_top(FONT_TEXT14, unit, center_y), unit, inks.value);
+    // Degree and percent fit their unit column at 24 px; "ppm" and "idx" do not.
+    const Font &font = (c.metric == Metric::TEMP || c.metric == Metric::HUM) ? FONT_TEXT24 : FONT_TEXT14;
+    draw_text(r, font, unit_x, centered_top(font, unit, center_y), unit, inks.value);
   }
 }
 
@@ -308,10 +313,10 @@ void draw_dashboard(const Raster &r, const Snapshot &snapshot) {
 
   char title[sizeof(snapshot.title) + 4];
   shorten_title(snapshot.title, title, sizeof(title));
-  draw_text(r, FONT_TEXT14, 12, 7, title, Ink::BLACK);
-  int stamp_w = measure_text(FONT_TEXT14, snapshot.stamp);
+  draw_text(r, FONT_TEXT24, 12, HEADER_TOP, title, Ink::BLACK);
+  int stamp_w = measure_text(FONT_TEXT24, snapshot.stamp);
   // A sensor error replaces the stamp, in red: the one status word on the page.
-  draw_text(r, FONT_TEXT14, 388 - stamp_w, 7, snapshot.stamp, snapshot.stamp_alert ? Ink::RED : Ink::BLACK);
+  draw_text(r, FONT_TEXT24, 388 - stamp_w, HEADER_TOP, snapshot.stamp, snapshot.stamp_alert ? Ink::RED : Ink::BLACK);
   hline(r, 12, 30, 376, Ink::BLACK);
 
   for (size_t i = 0; i < METRIC_COUNT; i++) {

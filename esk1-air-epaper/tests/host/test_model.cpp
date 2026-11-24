@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "../../components/aqi_dashboard/dashboard_model.h"
+#include "../../components/aqi_dashboard/dashboard_scheduler.h"
 #include "test_util.h"
 
 using namespace esphome::aqi_dashboard;
@@ -198,4 +199,55 @@ TEST(model_gap_resets_persistence) {
   m.on_sample(Metric::NOX, 25, t += MIN);
   m.on_sample(Metric::NOX, 25, t += 4 * MIN);  // the stream went stale: start over
   CHECK(m.state(Metric::NOX, t) == CellState::ELEVATED);  // reclassified at once after the gap
+}
+
+TEST(model_test_patterns) {
+  Model m;
+  m.configure(ModelConfig{});
+  uint32_t t = 1000;
+  m.on_sample(Metric::PM2_5, 8, t);
+  m.on_sample(Metric::PM10, 12, t);
+  m.on_sample(Metric::PM1, 5, t);
+  m.on_sample(Metric::VOC, 125, t);
+  m.on_sample(Metric::NOX, 1, t);
+  m.on_sample(Metric::TEMP, 22.4f, t);
+  m.on_sample(Metric::HUM, 46, t);  // CO2 not configured: "--"
+  Snapshot real{};
+  m.build(t, &real);
+
+  Snapshot mixed = real;
+  apply_test_pattern(TestPattern::MIXED, &mixed);
+  CHECK(mixed.cells[metric_index(Metric::PM2_5)].state == CellState::HIGH);
+  CHECK(mixed.cells[metric_index(Metric::PM10)].state == CellState::HIGH);
+  CHECK(mixed.cells[metric_index(Metric::PM1)].state == CellState::HIGH);
+  CHECK(mixed.cells[metric_index(Metric::VOC)].state == CellState::ELEVATED);
+  CHECK(mixed.cells[metric_index(Metric::NOX)].state == CellState::ELEVATED);
+  CHECK(mixed.cells[metric_index(Metric::HUM)].state == CellState::ELEVATED);
+  CHECK(mixed.cells[metric_index(Metric::TEMP)].state == CellState::NORMAL);
+  // No value: the real state stays, never coloured as a measurement.
+  CHECK(mixed.cells[metric_index(Metric::CO2)].state == CellState::PLACEHOLDER);
+  // The readings are the real ones.
+  for (size_t i = 0; i < METRIC_COUNT; i++)
+    CHECK_STR(mixed.cells[i].text, real.cells[i].text);
+
+  Snapshot high = real;
+  apply_test_pattern(TestPattern::HIGH, &high);
+  CHECK(high.cells[metric_index(Metric::VOC)].state == CellState::HIGH);
+  CHECK(high.cells[metric_index(Metric::NOX)].state == CellState::ELEVATED);
+  CHECK(high.cells[metric_index(Metric::HUM)].state == CellState::NORMAL);
+  CHECK(high.cells[metric_index(Metric::PM2_5)].state == CellState::HIGH);
+
+  // NONE leaves the page alone; the scheduler sees the test page as a
+  // state change both ways, so the next update reverts it.
+  Snapshot none = real;
+  apply_test_pattern(TestPattern::NONE, &none);
+  for (size_t i = 0; i < METRIC_COUNT; i++)
+    CHECK(none.cells[i].state == real.cells[i].state);
+  Scheduler sch;
+  sch.configure(Timing{}, Deadbands{});
+  sch.start(0);
+  CHECK(sch.tick(t, mixed, true, false).upload);  // boot page: the test page
+  sch.on_complete(Outcome::SUCCESS, t + 1000, false, 0);
+  CHECK(sch.state_change(real));
+  CHECK_STR(test_pattern_name(TestPattern::HIGH), "high");
 }

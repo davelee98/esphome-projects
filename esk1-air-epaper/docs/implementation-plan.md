@@ -69,7 +69,7 @@ This plan covers how to build it, in what order, and how each step is checked.
   a simulator. The protocol state machine is tied to ESP-IDF GATT events, so
   it can't be tested on a host. The driver has none of the hooks in spec §8
   (completion result, refresh-start marker, forced upload, owned scheduling).
-- **Dashboard.** Everything in spec §2–§7: the 14 px text table, the
+- **Dashboard.** Everything in spec §2–§7: the 14 px and 24 px text tables, the
   primitive renderer, formatting, classification with hysteresis and
   persistence, staleness, deadbands, snapshots, refresh scheduling, a clock,
   and the configuration schema.
@@ -301,15 +301,17 @@ Extend `tools/build_display_fonts.py` with `--dashboard DIR`, which writes:
   declarations, with no data;
 - `dashboard_assets.cpp`: `const` tables for
   - `text14`: `ter-u14n.bdf`, ASCII U+0020–U+007E plus `°`, `µ`, `³` (98 glyphs);
+  - `text24`: `ter-u24b.bdf`, the same 98 glyphs in bold, for the header, labels,
+    `°C`/`°F` and `%`;
   - `bold32`: `ter-u32b.bdf`, `0123456789.- °FC%` (17 glyphs);
   - `pm_units`: the 30×12 sprite, 4-byte stride.
 
 Keep the existing glyph struct layout (16 bytes), sorted by code point, so the
-renderer can binary-search. Drop the 24 px font from the dashboard output only;
+renderer can binary-search. Drop the 24 px numeric table from the dashboard output only;
 the existing `fonts/` outputs stay for the preview.
 
 **Done when:** running the generator twice gives identical files; the bitmap
-byte counts are 1,372, 1,088 and 48 (spec §3.1, §3.2); a host test compares
+byte counts are 1,372, 4,704, 1,088 and 48 (spec §3.1, §3.2); a host test compares
 every glyph row with the BDF source.
 
 #### 2.2 Remove duplicate ESPHome fonts in dashboard mode (S)
@@ -342,7 +344,7 @@ In `dashboard_render.h/.cpp`:
 Implements spec §6.3 exactly, from a `DashboardSnapshot` (Phase 4) only. No
 clock or sensor reads.
 
-- Header: title at (12, 7), shortened with `...` to 24 characters; stamp right
+- Header: 24 px bold title at (12, 3), shortened with `...` to 16 characters; stamp right
   aligned at 388; rule `(12, 30, 376, 1)`.
 - Eight cells from a constant table: origin, label, unit kind, column anchors
   (spec §2.2, §2.3).
@@ -366,7 +368,7 @@ Checks (spec §9, Pixel rendering):
 - The value cases in spec §9: CO2 `9999`, PM `0` and `1000`, gas `500`, `-40.0`,
   six-character negative temperature, HUM `100`, a rounding carry such as
   `99.96 → 100.0`, and widths one character over the limit giving `----`.
-- Colours: labels red on white and yellow, white on red; values and units
+- Colours: labels red on white, black on yellow, white on red; values and units
   black on white and yellow, white on red; sprite zero bits leave the
   background as it was.
 - Header: long and unsupported titles, `NO SAMPLE YET`, the `-- --- --:--` error stamp, and a
@@ -538,7 +540,7 @@ display:
     update_interval: never          # required in dashboard mode
     dashboard:
       time_id: ha_time              # required; the Timezone select sets its zone
-      title: INDOOR AIR             # ≤ 24 supported characters
+      title: INDOOR AIR             # ≤ 16 supported characters
       temperature_unit: C           # C or F
       sensors:
         pm_2_5: pm_2_5
@@ -609,8 +611,8 @@ about 4.3 KB of assets and under 1 KiB of RAM.
 3. Push a category transition (a match or incense near the sensor for PM; an
    alcohol wipe for VOC). Confirm the 3 min persistence, the early send, and
    the 15 min guard.
-4. Read the panel at its native size: the 14 px labels and the 32 px values
-   in all four inks; red labels on yellow; white on red.
+4. Read the panel at its native size: the 24 px labels and the 32 px values
+   in all four inks; black labels on yellow; white on red.
 5. Measure the actual transfer and refresh durations (log them) and compare
    with the 30 s assumption.
 6. Fault cases:

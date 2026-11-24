@@ -85,6 +85,11 @@ class AqiDashboard : public Component {
   // Refresh E-Paper: bypasses deadbands and the routine deadline, but still
   // waits for the physical-refresh guard and any running upload.
   void request_manual();
+  // Test Mixed / Test High buttons: the next page shows the real readings in
+  // the pattern's cell colours (dashboard_model.h), under the same guard as
+  // Refresh. Once the label shows it, the pattern is dropped, so the page
+  // after that reverts to the real colours.
+  void show_test_pattern(TestPattern pattern);
 
   void setup() override;
   void dump_config() override;
@@ -95,6 +100,7 @@ class AqiDashboard : public Component {
   void on_sample_(Metric metric, float value);
   void on_complete_(od::Result result, bool has_marker, uint32_t marker_ms);
   void build_latest_(uint32_t now_ms);
+  void test_page_shown_();
   void format_stamp_(char *out, size_t size) const;
   // "SENSOR MISSING", "SENSOR ERROR" or nullptr.
   const char *sensor_error_(uint32_t now_ms) const;
@@ -117,6 +123,10 @@ class AqiDashboard : public Component {
   Snapshot latest_{};
 
   // Newest SEN65 batch: wall-clock epoch at arrival, 0 if the clock was not set.
+  // The requested test page, and the one the upload in flight carries.
+  TestPattern test_pattern_{TestPattern::NONE};
+  TestPattern test_in_flight_{TestPattern::NONE};
+
   bool sample_seen_{false};
   int64_t sample_epoch_{0};
 
