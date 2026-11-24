@@ -248,9 +248,10 @@ esk1-air-epaper/
     └── timezone_select/          # runtime timezone choice
 ```
 
-Both entry points need a `secrets.yaml` with `wifi_ssid`, `wifi_password`,
-`esk1_air_epaper_ap_password` and `esk1_air_epaper_api_key`. Both also need
-ESPHome 2026.11 or later.
+The base file holds everything shared. Each entry point adds the two
+settings that belong to one device: its API encryption key and its fallback
+hotspot password. The base has no `api:` block, so a config that leaves out
+the key doesn't validate. Both entry points need ESPHome 2026.11 or later.
 
 ### Build from this repo
 
@@ -260,13 +261,18 @@ From `esk1-air-epaper/`:
 esphome run esk1-air-epaper.yaml
 ```
 
-Edits to `components/` are built at once.
+Edits to `components/` are built at once. Put a `secrets.yaml` beside the
+YAML with `wifi_ssid`, `wifi_password`, `esk1_air_epaper_ap_password` and
+`esk1_air_epaper_api_key`.
 
 ### Build in Device Builder
 
-Nothing needs copying. Create a device, replace its YAML with
+Nothing needs copying. Create a device and note the API key and hotspot
+password the wizard generated. Replace its YAML with
 [examples/device-builder.yaml](esk1-air-epaper/examples/device-builder.yaml)
-and add the four secrets in Device Builder. It loads the base file as a
+and paste those two values back in. The only secrets it needs are
+`wifi_ssid` and `wifi_password`, which the wizard normally sets up. It loads
+the base file as a
 remote package and the components as a git external component, both from
 this repo at the same `ref`. Substitutions in that file (`device_name`,
 `esl_name`, `esl_mac`, `timezone`) override the package's defaults.

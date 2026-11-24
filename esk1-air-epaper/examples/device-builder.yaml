@@ -2,13 +2,12 @@
 # standalone dashboard), with nothing copied from this repo.
 #
 # 1. In Device Builder: New Device, name it, choose ESP32-C6, skip the first
-#    install, then Edit and replace the whole file with this one. Set
-#    device_name below to the name you gave it.
-# 2. Add these keys to Device Builder's Secrets (top-right menu):
-#      wifi_ssid, wifi_password,
-#      esk1_air_epaper_ap_password,
-#      esk1_air_epaper_api_key   (32 random bytes, base64; e.g.
-#                                 openssl rand -base64 32)
+#    install, then Edit. Copy two values from the generated file: the api
+#    encryption key and the wifi ap password. Replace the whole file with
+#    this one and paste those two values into the api: and wifi: blocks at
+#    the bottom. Set device_name below to the name you gave the device.
+# 2. Device Builder's Secrets (top-right menu) need wifi_ssid and
+#    wifi_password; the wizard normally adds them already.
 # 3. Install. Device Builder must run ESPHome 2026.11.0 or newer.
 #
 # The device config (esk1-air-epaper.base.yaml) and the components are fetched
@@ -42,6 +41,19 @@ external_components:
       path: esk1-air-epaper/components
     components: [opendisplay, aqi_dashboard, timezone_select]
     refresh: 1d
+
+# The two settings that belong to this device and not to the package. Paste
+# the values the wizard generated (or make your own: the key is 32 random
+# bytes in base64, e.g. openssl rand -base64 32; the hotspot password is at
+# least 8 characters). Home Assistant asks for this key when it adds the
+# device.
+api:
+  encryption:
+    key: "PASTE-THE-GENERATED-KEY-HERE"
+
+wifi:
+  ap:
+    password: "PASTE-THE-GENERATED-PASSWORD"
 
 # Any other key added here merges into the package and wins over it, e.g.:
 # logger:

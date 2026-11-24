@@ -22,6 +22,11 @@
 #                                   components fetched from GitHub
 # Every substitution below is a default the entry point can override.
 # !secret values come from the entry point's secrets.yaml.
+#
+# Each entry point must add the two settings that belong to one device:
+#   api:   encryption: key: ...     (there is no api: here, so a config
+#                                    without its own key does not validate)
+#   wifi:  ap: password: ...        (the fallback hotspot's password)
 substitutions:
   # Device identity. Change both to run a second unit from the same package.
   device_name: esk1-air-epaper
@@ -57,12 +62,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: ${device_name} Fallback Hotspot
-    password: !secret esk1_air_epaper_ap_password
-
-api:
-  encryption:
-    key: !secret esk1_air_epaper_api_key
+    ssid: ${device_name} Fallback Hotspot   # password: from the entry point
 
 ota:
   - platform: esphome
