@@ -8,6 +8,7 @@ components it loads from GitHub and its `secrets.yaml`.
 |---|---|
 | [fortune-button](fortune-button/) | A yes/no oracle toy: press the button, a prize wheel of LEDs spins and ticks, then it gives a verdict in light and sound |
 | [esk1-house](esk1-house/) | The whole ESK-1 kit in one device: an air-quality status board on the LED house, plus the fortune button on the same LEDs |
+| [esk1-air-epaper](esk1-air-epaper/) | SEN65 air-quality readings drawn as a dashboard on a 4.2" OpenDisplay e-paper label, pushed over BLE |
 
 ---
 
@@ -222,6 +223,53 @@ no local paths to change.
 
 Both components are fetched from `main` with `refresh: always`, so each build
 picks up their latest changes. It needs ESPHome 2026.8 or later.
+
+---
+
+## esk1 air epaper
+
+An ESK-1 (ESP32-C6) reads the SEN65 every 60 s, draws an air-quality
+dashboard in black, white, red and yellow, and pushes it over BLE to a 4.2"
+OpenDisplay e-paper label. It connects only for an upload, so the label can
+sleep between refreshes. The details are in
+[docs/key-features.md](esk1-air-epaper/docs/key-features.md) and
+[docs/aqi-dashboard-specification.md](esk1-air-epaper/docs/aqi-dashboard-specification.md).
+
+### Layout
+
+```
+esk1-air-epaper/
+├── esk1-air-epaper.base.yaml     # the whole device, except where components come from
+├── esk1-air-epaper.yaml          # entry point for this repo: base + ./components
+├── examples/device-builder.yaml  # entry point for Device Builder: base + components from GitHub
+└── components/
+    ├── opendisplay/              # BLE driver for OpenDisplay labels
+    ├── aqi_dashboard/            # the page and when to refresh it
+    └── timezone_select/          # runtime timezone choice
+```
+
+Both entry points need a `secrets.yaml` with `wifi_ssid`, `wifi_password`,
+`esk1_air_epaper_ap_password` and `esk1_air_epaper_api_key`. Both also need
+ESPHome 2026.11 or later.
+
+### Build from this repo
+
+From `esk1-air-epaper/`:
+
+```sh
+esphome run esk1-air-epaper.yaml
+```
+
+Edits to `components/` are built at once.
+
+### Build in Device Builder
+
+Nothing needs copying. Create a device, replace its YAML with
+[examples/device-builder.yaml](esk1-air-epaper/examples/device-builder.yaml)
+and add the four secrets in Device Builder. It loads the base file as a
+remote package and the components as a git external component, both from
+this repo at the same `ref`. Substitutions in that file (`device_name`,
+`esl_name`, `esl_mac`, `timezone`) override the package's defaults.
 
 ---
 

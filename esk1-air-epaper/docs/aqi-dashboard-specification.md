@@ -6,7 +6,8 @@ This document defines the target 400 × 300 BWRY dashboard for the
 `esk1-air-epaper` custom component. It consolidates the current preview and
 describes a renderer built from integer-coordinate rectangles and transparent
 1-bit bitmaps. The rendering core can use C-compatible data and functions; its
-ESPHome integration will be C++ inside `components/opendisplay/`.
+ESPHome integration is its own component, `components/aqi_dashboard/`, drawing
+through the `opendisplay` BLE display driver.
 
 The visual requirements below reflect the selected design. Refresh scheduling,
 classification thresholds and change deadbands are **proposed implementation
@@ -31,9 +32,9 @@ air-quality index.
 | Sensor sampling | Keep the existing 60-second SEN65 sampling interval |
 | Data publishing | Keep all existing sensor reporting, including PM4, independent of display refresh |
 
-The [current YAML](../esk1-air-epaper.yaml) still has a five-minute display
-polling interval and an older drawing lambda. This document specifies their
-replacement; adding this document does not implement that replacement.
+The [device YAML](../esk1-air-epaper.base.yaml) implements this document
+with the `aqi_dashboard` component. That component replaced an earlier
+five-minute polling interval and drawing lambda.
 The [existing driver](../components/opendisplay/opendisplay.cpp) already
 provides a framebuffer, unchanged-frame detection, BLE transfer, compression,
 panel discovery and refresh acknowledgements. Reuse those facilities.
@@ -64,7 +65,10 @@ All rectangles use half-open bounds: `(x, y, width, height)` covers
 Keep the title and stamp on one line. Limit the configurable title to 24
 supported characters; shorten longer titles with three ASCII periods within
 that limit. Do not overlap the stamp. There is no SEN65 label, footer,
-connectivity icon or visible status sentence.
+connectivity icon or visible status sentence, with one exception: when the
+SEN65 is missing or failing, the stamp is replaced by `SENSOR MISSING` (not
+detected at start-up, or never reported) or `SENSOR ERROR` (reported before,
+now read errors and no current reading), drawn in red.
 
 The timestamp describes the captured SEN65 sample, not the time of each
 one-second scheduler tick. If a frame includes readings with different sample
@@ -72,7 +76,9 @@ times, retain those times internally; the header is not a guarantee that every
 source was sampled simultaneously. Use the newest accepted SEN65 batch time,
 including on a stale-data page so its age remains visible. Until any sample has
 arrived, show `NO SAMPLE YET`. If samples exist but wall-clock time is unknown,
-show `TIME UNKNOWN`. Do not fabricate a date from uptime. If time becomes valid
+show the error stamp `-- --- --:--` (the `DD MON HH:MM` shape, with dashes).
+The page must still be drawn and sent without a clock. Do not fabricate a date
+from uptime. If time becomes valid
 after a sample, stamp a subsequent fresh sample rather than guessing its date.
 
 Freeze the stamp with the frame snapshot. Do not update it every minute just to
@@ -278,8 +284,13 @@ An external CO2 source can be fresh when the SEN65 is stale, or vice versa.
 | Optional source not configured | White | Red | Black | `--` |
 | Configured source stale, invalid or faulted | Yellow | Red | Black | `--` |
 | Formatted reading exceeds the 32-pixel field capacity | Yellow | Red | Black | `----` |
+| SEN65 missing or failing (header shows the error) | Yellow | Red | Black | `--` for each SEN65 cell without a current reading |
 
-There are no visible status words. Retain detailed states in component logs or
+Apart from the header's sensor error, there are no visible status words. A
+SEN65 that is merely warming up, or stale without read errors, is not an
+error. A missing sensor's error page is sent at start-up without waiting for
+`startup_wait`; the error appearing or clearing is an availability
+transition, subject to the physical refresh guard. Retain detailed states in component logs or
 diagnostics. A red cell background is reserved for a high valid reading, so a
 missing sensor does not resemble a pollution measurement. The default red
 labels do not indicate high readings. Invalid data overrides classification.
@@ -599,7 +610,10 @@ can be verified without a BLE label:
 | Generated dashboard font table | Const normal-14 and bold-32 glyph data plus PM unit |
 | Dashboard scheduler / component glue | Sensor bindings, classification, freshness, deadlines, snapshots |
 | Existing `opendisplay.h/.cpp` | Framebuffer, discovery, protocol, compression, ACKs and completion |
-| `display.py` | Validated dashboard configuration and code generation |
+| `aqi_dashboard/__init__.py` | Validated dashboard configuration and code generation (`aqi_dashboard:` with `display_id`) |
+
+As built, everything above except `opendisplay.h/.cpp` lives in
+`components/aqi_dashboard/`; `components/opendisplay/` is only the BLE driver.
 
 These are proposed additions; they are not existing public interfaces.
 Bind the current PM, VOC, NOx, temperature and humidity sensor IDs. Make CO2 an

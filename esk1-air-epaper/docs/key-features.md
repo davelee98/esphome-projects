@@ -26,66 +26,74 @@ the middle.
   through the encrypted native API. A diagnostic Wi-Fi signal sensor comes
   with them.
 - **Start-up warm-up.** `sen6x` ignores readings for the first 60 s, so the
-  first values arrive about 2 minutes after boot. Until then the page shows
-  `--` for missing values.
+  first values arrive about 2 minutes after boot. Until then the cells show
+  `--` on white.
 
-## The e-paper page
+## The e-paper page: AQI dashboard
 
-The target custom-component dashboard is specified in
-[AQI dashboard specification and primitive renderer](aqi-dashboard-specification.md).
-It defines the current eight-cell preview and its primitive renderer, with
-proposed refresh and threshold policies. The layout and five-minute polling
-described below are the existing YAML implementation, pending that migration.
+The page is the dashboard in
+[AQI dashboard specification and primitive renderer](aqi-dashboard-specification.md),
+built as its own component, [components/aqi_dashboard/](../components/aqi_dashboard/)
+(`aqi_dashboard:` in the YAML; see [implementation-plan.md](implementation-plan.md)).
+It draws through the `opendisplay` display, which is only the BLE driver. "AQI dashboard" is only
+the project name: the page shows individual readings, not an official AQI.
 
-A two-column layout on the 400×300 panel:
+- **Header.** The title (`INDOOR AIR` by default) on the left. On the right,
+  when the SEN65 reading behind the values was taken (`23 NOV 14:35`), or
+  `NO SAMPLE YET`, or `-- --- --:--` if the clock wasn't set at that moment.
+  If the SEN65 is missing or failing, the stamp is replaced by a red
+  `SENSOR MISSING` (not found at start-up, or never reported) or
+  `SENSOR ERROR` (it worked, now reads fail), and its cells turn yellow `--`.
+  Then a black rule.
+- **Eight equal cells, 184×60.** PM2.5 | CO2, PM10 | VOC, PM1 | NOx,
+  TEMP | HUM. Each has a red label, a bold 32 px value and its unit (`µg/m³`
+  bitmap, `ppm`, `idx`, `°C`/`°F`, `%`). PM4 is reported to Home Assistant
+  but not drawn.
+- **Cell colour is the state:**
 
-- **Left, particulates:** PM2.5 and PM10 in large figures, with PM1.0
-  and PM4.0 in small type beneath them.
-- **Right, gases and climate:** VOC and NOx indices in large figures,
-  temperature (°C, one decimal) and humidity (%) beneath them.
+  | Cell | Meaning |
+  |---|---|
+  | White | Normal reading; or starting up / sensor not configured (`--`) |
+  | Yellow | Elevated reading; or stale / invalid sensor (`--`); or a value too wide to show (`----`) |
+  | Red, white text | High reading |
 
-Values are rounded before they are drawn. Small sensor jitter then doesn't
-change the frame, so it doesn't trigger another upload (see below). All three
-font assets use native Terminus bitmaps: normal 14 px text and bold 24/32 px
-numerical readings. Glyph bytes are copied directly
-from the upstream BDF files at their exact native sizes, without rasterizing
-outlines or scaling pixels.
+  The three PM cells follow PM2.5's level. VOC and NOx have their own.
+  Temperature and humidity are always white. CO2 has no level until bands
+  are configured, and the SEN65 has no CO2 channel, so the cell stays
+  `CO2 -- ppm` unless an external sensor is bound.
+- **Levels with hysteresis.** Entering and leaving a level use different
+  thresholds, and a new level must hold for 3 minutes of fresh readings
+  first. These are project event bands for tuning, not health limits.
+- **Fonts.** Native Terminus bitmaps only: normal 14 px text and bold 32 px
+  numbers, copied byte for byte from the BDF files by
+  [build_display_fonts.py](../tools/build_display_fonts.py) into
+  `components/aqi_dashboard/dashboard_assets.cpp` (about 4.3 KB of flash with the
+  PM sprite). The 24 px font and the ESPHome `font:` assets are not linked.
 
-The two value fonts contain only `0123456789.- °FC%` (17 glyphs, including
-space). The period supports decimals, the minus supports negative values and
-the `--` missing-value marker, and both temperature units are available.
-`glyphsets: []` keeps ESPHome from adding its default alphabet to these fonts.
-The original BDF files and their license are in [fonts/terminus/](../fonts/terminus/).
-For plain C rendering, [numeric-glyphs.h](../fonts/numeric-glyphs.h) contains
-the same native bold Terminus 24 px and 32 px glyphs as packed 1-bpp rows with advance
-and bearing metrics. Their bitmap data totals 1,904 bytes, excluding metrics.
-Regenerate
-the assets with [build_display_fonts.py](../tools/build_display_fonts.py),
-using Python and Pillow. Pillow only writes the PNG previews; font pixels
-are read directly from BDF. All glyphs at each size use the original fixed
-advance width for monospaced alignment.
+### When the label refreshes
 
-The PM unit is a separate transparent 30×12 bitmap: `µg/m³` on one line.
-Its monospaced letters come from the original 6×12 Terminus normal bitmap.
-[pm-units.h](../fonts/pm-units.h) contains its 48 bytes of 1-bpp
-pixels; [pm-units.png](../fonts/pm-units.png) is the transparent image version.
-The preview places it beside each PM value in the same ink as the number.
-The 12 px BDF is only a build input for this complete unit bitmap; it does
-not add a fourth runtime font asset.
+A BWRY refresh takes about 30 s and costs the label battery, so readings are
+sampled every 60 s but the panel refreshes rarely:
 
-Optional native 24×24 thermometer and droplet bitmaps are available in
-[climate-icons.h](../fonts/climate-icons.h), 72 bytes each. Their PNG versions
-have transparent backgrounds and do not need an icon font. The current preview
-uses the monospaced `TEMP` and `HUM` labels instead.
+| Trigger | When |
+|---|---|
+| First reading after boot | As soon as the SEN65 reports, or a `--` page after 3 minutes without it |
+| A cell changes colour or availability | At once, but never within 15 min of the last refresh |
+| A meaningful number change (PM ±max(2, 20 %), VOC 25, NOx 10, CO2 100, temperature 0.5 °C, humidity 3) | 30 min after the last successful refresh |
+| Heartbeat | 60 min after the last successful refresh, even if nothing changed |
+| **Refresh E-Paper** button | At once, but never within 15 min of the last refresh |
+| Failure | Retry after 2, then 5, then every 15 min |
 
-The page is redrawn every 5 minutes. A **Refresh E-Paper** button in Home
-Assistant forces a redraw at any time.
+Every threshold and interval is in the YAML (`timing`, `deadbands`, `bands`).
+The page being sent is frozen, so readings that arrive during an upload wait
+for the next one. A page only counts as displayed when the label confirms the
+refresh.
 
 ## The `opendisplay` component
 
 A custom ESPHome display platform that drives an OpenDisplay label directly
-over BLE. It uses only the OpenDisplay protocol's (version 2.2) DIRECT_WRITE
-flow: every upload is a full frame (see [Out of scope](#out-of-scope)).
+over BLE. It uses only the OpenDisplay protocol's DIRECT_WRITE flow (checked
+against the upstream sources in [opendisplay-protocol-notes.md](opendisplay-protocol-notes.md)): every upload is a full frame (see [Out of scope](#out-of-scope)).
 
 ### Battery-friendly by design
 
@@ -117,12 +125,17 @@ flow: every upload is a full frame (see [Out of scope](#out-of-scope)).
   label's ACK. Data chunks use write-without-response where the
   characteristic allows it.
 - **Clear failure reporting.** Every stage has its own timeout: 120 s to
-  connect, 10 s per command, 90 s per data ACK, END ACK and panel refresh. A
-  failure (NACK, GATT error, disconnect, timeout, encryption required) sets a
-  warning status on the component and logs the reason. A successful upload
-  logs its size and how long it took.
+  connect, 30 s for START (the panel initialises then), 10 s for other
+  commands, 90 s per data ACK, END ACK and panel refresh. A failure (NACK,
+  GATT error, disconnect, timeout, encryption required) sets a warning status
+  on the component and logs the reason. The config CRC is checked, and a
+  mismatch is logged, as the firmware itself does. A START refused because
+  the label's config needs migrating or the panel is busy is reported as such
+  rather than retried uncompressed. A successful upload logs its size and how
+  long it took.
 - **No lost updates.** If a redraw is requested while an upload is still
-  running, it is queued and runs as soon as the transfer finishes.
+  running, it is queued and runs as soon as the transfer finishes. (With the
+  dashboard, its scheduler decides instead.)
 - **Handles firmware auto-complete.** If the label ends the transfer itself
   once its buffer is full, the component skips its own END command.
 
@@ -152,9 +165,14 @@ flow: every upload is a full frame (see [Out of scope](#out-of-scope)).
 - **Standard ESPHome conventions.** `COLOR_OFF` is paper and `COLOR_ON` is
   black ink, as on ESPHome's other e-paper drivers. Auto-clear gives a white
   page, and default text is black.
-- **Real colours on colour panels.** Any other colour becomes the nearest ink
-  the panel has. For example, `Color(255, 0, 0)` draws red on BWR and BWRY
-  panels. On a `MONO` panel, any colour other than `COLOR_OFF` is black.
+- **Exact inks, no colour matching.** Pixels are drawn in exactly the four
+  inks defined in [ink.h](../components/opendisplay/ink.h). A lambda names
+  them with `opendisplay::INK_WHITE` (= `COLOR_OFF`), `INK_BLACK`
+  (= `COLOR_ON`), `INK_RED` (`Color(255, 0, 0)`) and `INK_YELLOW`
+  (`Color(255, 255, 0)`). Any other colour is not an ink: it is drawn black,
+  and the log names it once per frame. A panel without an ink uses the one it
+  has: red and yellow are black on `MONO`, and on `BWR` / `BWY` the missing
+  accent uses the panel's own. The dashboard writes the inks directly.
 - **Refresh modes.** `FULL` (the default) or `FAST`, sent with each frame.
 - **Fast fills.** A full-screen `fill()` is a `memset` of the buffer. A
   clipped fill falls back to pixel by pixel.
@@ -223,6 +241,7 @@ Sizes count each row rounded up to a whole byte. The limit is
 display:
   - platform: opendisplay
     ble_client_id: esl_client
+    ble_name: "OD*"         # find the label by name (see below)
     # Optional; all three or none. The label's own values win.
     width: 400              # the panel's native size, before rotation
     height: 300
@@ -230,15 +249,35 @@ display:
     refresh_mode: FULL      # FULL or FAST
     skip_unchanged: true    # default
     compression: true       # default
-    update_interval: 5min   # component default is 10min
-    lambda: |-
-      it.print(0, 0, id(my_font), "Hello");
+    update_interval: never  # when aqi_dashboard decides when to refresh
+    # or a lambda / pages for a page of your own (then a normal update_interval)
+
+aqi_dashboard:              # the page, as its own component
+  display_id: epaper        # must be 400x300 BWRY, update_interval: never, no lambda
+  time_id: ha_time
+  sen6x_id: sen65
+  sensors: {pm_2_5: pm_2_5, pm_10_0: pm_10_0, ...}
 ```
 
-The component also accepts the standard ESPHome display options (`pages`,
-`rotation`, and the rest). Set the label's BLE address in the `esl_mac`
-substitution. The OpenDisplay app and Home Assistant both show it. So does
-this device's log with `esp32_ble_tracker` at DEBUG level.
+Without `aqi_dashboard`, the display takes the standard ESPHome display
+options (`lambda`, `pages`, `rotation`, and the rest) and refreshes on its
+`update_interval`. Lambdas draw with the four inks `INK_WHITE`, `INK_BLACK`,
+`INK_RED` and `INK_YELLOW`.
+
+**Finding the label.** With `esl_mac` left at `00:00:00:00:00:00`, the label
+is found by its advertised BLE name. OpenDisplay firmware advertises `OD` plus
+6 hex digits; a trailing `*` matches a prefix, so `OD*` takes the first
+OpenDisplay label heard. The address found is kept in flash. Any other
+`esl_mac` is used as is. The web page at `http://esk1-air-epaper.local/` shows
+the address in use (**Label MAC**) and lets you change the name
+(**BLE Name**) and the **Timezone**.
+
+**Clock.** Home Assistant time, with SNTP (`pool.ntp.org`) as a backup. The
+page never waits for the clock; without it the stamp reads `-- --- --:--`.
+
+**Tests.** `python tools/run_host_tests.py` builds and runs the host tests
+(protocol against a simulated label, renderer pixels, value model, refresh
+scheduler) and writes the test pages to `output/host-render/`.
 
 ## Not supported (yet)
 
