@@ -82,7 +82,7 @@ sampled every 60 s but the panel refreshes rarely:
 | A meaningful number change (PM ±max(2, 20 %), VOC 25, NOx 10, CO2 100, temperature 0.5 °C, humidity 3) | 30 min after the last successful refresh |
 | Heartbeat | 60 min after the last successful refresh, even if nothing changed |
 | **Refresh E-Paper** button | At once, but never within 15 min of the last refresh |
-| **Test Mixed** / **Test High** buttons | Like Refresh; one page of the live readings in a fixed pattern of colours (below) |
+| **Test Mixed** / **Test High** buttons | At once, skipping the 15 min guard; one page of the live readings in a fixed pattern of colours (below) |
 | Failure | Retry after 2, then 5, then every 15 min |
 
 Every threshold and interval is in the YAML (`timing`, `deadbands`, `bands`).
@@ -98,10 +98,12 @@ without polluted air. Each sends one page with the real readings, recoloured:
 | **Test Mixed** | PM2.5, PM10, PM1 | VOC, NOx, HUM | CO2, TEMP |
 | **Test High** | PM2.5, PM10, PM1, VOC | NOx | CO2, TEMP, HUM |
 
-Cells showing `--` or `----` keep their real state. Once the label shows the
-test page, the pattern is dropped: the real colours differ from it, so the
-next page (a state change, after the 15 min guard) restores them. A failed
-test upload is retried as a test page.
+Cells showing `--` or `----` keep their real state. A test page is the one
+upload that skips the refresh guard; it still waits for an upload in progress
+and for retry backoff. Once the label shows it, the pattern is dropped: the
+real colours differ from it, so the next page (a state change, under the
+normal 15 min guard) restores them. A failed test upload is retried as a test
+page, still skipping the guard unless the panel may already have refreshed.
 
 ## The `opendisplay` component
 

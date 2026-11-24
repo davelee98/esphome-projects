@@ -366,6 +366,11 @@ subject to the 15-minute guard. A routine numeric change alone waits for the
 30-minute deadline. Heartbeat bypasses numeric deadbands, but not the guard.
 Manual refresh bypasses numeric deadbands and the routine deadline, but still
 queues behind the guard and any active upload. Multiple requests coalesce.
+The one exception is a test page (the Test Mixed / Test High buttons): its
+upload skips the guard once, still waiting for any active upload and retry
+backoff. The bypass is spent once a refresh could have begun; a failure
+before that keeps it for the retry. The page that restores the real colours
+is guarded as usual.
 
 On cold boot, with no display history in RAM, send the first usable SEN65 batch
 once the panel is identified. If none arrives within 180 seconds, one starting

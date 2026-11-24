@@ -106,7 +106,7 @@ Decision Scheduler::tick(uint32_t now_ms, const Snapshot &latest, bool sen65_see
     d.waiting_for = "transport busy";
     return d;
   }
-  if (this->has_guard_ && !elapsed(now_ms, this->guard_start_ms_, this->timing_.guard_ms)) {
+  if (this->has_guard_ && !this->guard_bypass_ && !elapsed(now_ms, this->guard_start_ms_, this->timing_.guard_ms)) {
     d.waiting_for = "refresh guard";
     return d;
   }
@@ -133,6 +133,9 @@ void Scheduler::on_complete(Outcome outcome, uint32_t now_ms, bool has_marker, u
     this->has_guard_ = true;
     this->guard_start_ms_ = refresh_marker_ms;
   }
+  // A test page's guard bypass is spent once the panel may have refreshed.
+  if (outcome != Outcome::FAILED_NOT_SENT)
+    this->guard_bypass_ = false;
   switch (outcome) {
     case Outcome::SUCCESS:
     case Outcome::UNCHANGED:

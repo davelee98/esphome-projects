@@ -230,8 +230,9 @@ button:
     on_press:
       - component.update: epaper
   # Test pages: the live readings in fixed cell colours, to check the inks on
-  # the panel. Like Refresh they wait out the 15 min guard; the page after the
-  # test one restores the real colours. Cells showing "--" keep their state.
+  # the panel. They are sent at once, skipping the 15 min guard; the page after
+  # the test one (guarded as usual) restores the real colours. Cells showing
+  # "--" keep their state.
   - platform: template
     name: Test Mixed
     icon: mdi:palette

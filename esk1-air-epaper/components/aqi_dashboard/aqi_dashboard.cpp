@@ -85,7 +85,7 @@ void AqiDashboard::request_manual() {
 void AqiDashboard::show_test_pattern(TestPattern pattern) {
   ESP_LOGI(TAG, "Test page '%s' requested: real readings, test colours, for one page", test_pattern_name(pattern));
   this->test_pattern_ = pattern;
-  this->scheduler_.request_manual();
+  this->scheduler_.request_test();  // skips the refresh guard, once
 }
 
 // Called when an upload finished with the page on the label (sent or already

@@ -86,9 +86,9 @@ class AqiDashboard : public Component {
   // waits for the physical-refresh guard and any running upload.
   void request_manual();
   // Test Mixed / Test High buttons: the next page shows the real readings in
-  // the pattern's cell colours (dashboard_model.h), under the same guard as
-  // Refresh. Once the label shows it, the pattern is dropped, so the page
-  // after that reverts to the real colours.
+  // the pattern's cell colours (dashboard_model.h), sent without waiting for
+  // the refresh guard. Once the label shows it, the pattern is dropped, so the
+  // page after that (guarded as usual) reverts to the real colours.
   void show_test_pattern(TestPattern pattern);
 
   void setup() override;

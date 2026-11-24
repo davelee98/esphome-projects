@@ -67,6 +67,15 @@ class Scheduler {
   void start(uint32_t now_ms);  // boot time
 
   void request_manual() { this->manual_pending_ = true; }
+  // A test page (Test Mixed / Test High): manual, and the next upload skips
+  // the refresh guard. It still waits for a running upload and retry backoff.
+  // The bypass is spent once a refresh could have begun (success, unchanged
+  // or uncertain); a failure before anything was sent keeps it for the retry.
+  // The page after the test one is guarded as usual.
+  void request_test() {
+    this->manual_pending_ = true;
+    this->guard_bypass_ = true;
+  }
 
   // Once per tick, with the latest snapshot. If the result says upload, the
   // snapshot is frozen as in_flight() and must be what gets drawn.
@@ -115,6 +124,7 @@ class Scheduler {
   uint32_t retry_from_ms_{0};
 
   bool manual_pending_{false};
+  bool guard_bypass_{false};
 };
 
 }  // namespace esphome::aqi_dashboard

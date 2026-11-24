@@ -19,6 +19,7 @@ struct Sim {
   uint32_t now{10 * S};
   float pm25{8}, pm10{12}, pm1{5}, voc{100}, nox{1}, temp{21.0f}, hum{45};
   bool sensor_alive{true};
+  TestPattern pattern{TestPattern::NONE};  // applied to every snapshot, as the component does
   // Transport: an upload completes after `upload_ms` with `next_outcome`.
   bool busy{false};
   uint32_t upload_done_at{0};
@@ -55,6 +56,7 @@ struct Sim {
     }
     Snapshot latest{};
     model.build(now, &latest);
+    apply_test_pattern(pattern, &latest);
     if (busy && memcmp(&sched.in_flight(), &drawn_during_upload, sizeof(Snapshot)) != 0)
       in_flight_changed = true;
     Decision d = sched.tick(now, latest, model.sen65_seen(), busy);
@@ -233,6 +235,41 @@ TEST(sched_manual_waits_for_guard_and_is_forced) {
   CHECK_EQ(s.uploads.size(), 2u);
   CHECK(s.reasons.back() & REASON_MANUAL);
   CHECK(s.forced.back());
+}
+
+TEST(sched_test_page_skips_guard_once) {
+  Sim s;
+  s.run(2 * MIN);  // boot page; its guard runs to about 17 min
+  CHECK_EQ(s.uploads.size(), 1u);
+  s.pattern = TestPattern::HIGH;
+  s.sched.request_test();
+  s.run(2 * S);
+  CHECK_EQ(s.uploads.size(), 2u);  // at once, inside the guard
+  CHECK(s.reasons.back() & REASON_MANUAL);
+  CHECK(s.forced.back());
+  s.run(1 * MIN);  // the test page completes and restarts the guard
+  s.pattern = TestPattern::NONE;  // shown once: the component drops it
+  // The bypass is spent: the revert page waits the full guard again.
+  s.run(10 * MIN);
+  CHECK_EQ(s.uploads.size(), 2u);
+  s.run(6 * MIN);
+  CHECK_EQ(s.uploads.size(), 3u);
+}
+
+TEST(sched_test_page_bypass_survives_unsent_failure) {
+  Sim s;
+  s.run(2 * MIN);
+  s.next_outcome = Outcome::FAILED_NOT_SENT;
+  s.marker = false;  // nothing reached the panel
+  s.pattern = TestPattern::MIXED;  // kept until shown, so the retry has a reason
+  s.sched.request_test();
+  s.run(1 * MIN);  // the 40 s upload fails
+  CHECK_EQ(s.uploads.size(), 2u);
+  s.next_outcome = Outcome::SUCCESS;
+  s.marker = true;
+  s.run(2 * MIN);  // the 2 min backoff; still inside the boot page's guard
+  CHECK_EQ(s.uploads.size(), 3u);  // the retry kept the bypass
+  CHECK(s.reasons.back() & REASON_RETRY);
 }
 
 TEST(sched_sensor_goes_stale_without_callback) {
