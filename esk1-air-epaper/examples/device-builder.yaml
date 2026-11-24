@@ -30,7 +30,7 @@ substitutions:
 packages:
   esk1_air_epaper:
     url: https://github.com/davelee98/esphome-projects
-    ref: esk1-air-epaper
+    ref: main
     files: [esk1-air-epaper/esk1-air-epaper.base.yaml]
     refresh: 1d
 
@@ -38,7 +38,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/davelee98/esphome-projects
-      ref: esk1-air-epaper
+      ref: main
       path: esk1-air-epaper/components
     components: [opendisplay, aqi_dashboard, timezone_select]
     refresh: 1d
