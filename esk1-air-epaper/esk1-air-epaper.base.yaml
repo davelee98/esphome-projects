@@ -1,0 +1,269 @@
+# esk1 air epaper: SEN65 air quality on a 4.2" OpenDisplay e-paper ESL, from an
+# ESPHome Starter Kit (ESP32-C6).
+#   C6 module -> controller, ESP-IDF
+#   SEN65     -> I2C on GPIO1 (SDA) / GPIO0 (SCL)
+#   ESL       -> 4.2" OpenDisplay e-paper label over BLE (no wiring)
+#
+# The ESK-1 draws the AQI dashboard itself (docs/aqi-dashboard-specification.md)
+# and pushes it to the label over BLE with the opendisplay component
+# (components/opendisplay). It connects only for an upload, then disconnects
+# so the label can sleep. The sensors report every 60 s; the label refreshes
+# far less often (each BWRY refresh takes ~30 s): on a meaningful change after
+# 30 min, at once (but at most every 15 min) when a cell changes colour or
+# availability, and hourly regardless.
+#
+# No bluetooth_proxy here: Home Assistant's OpenDisplay integration could then
+# reach the same label through this device and the two would fight over it.
+#
+# This is the whole device except where its external components come from, so
+# the same file serves two entry points:
+#   esk1-air-epaper.yaml          - this repo, components from ./components
+#   examples/device-builder.yaml  - ESPHome Device Builder, this file and the
+#                                   components fetched from GitHub
+# Every substitution below is a default the entry point can override.
+# !secret values come from the entry point's secrets.yaml.
+substitutions:
+  # Device identity. Change both to run a second unit from the same package.
+  device_name: esk1-air-epaper
+  friendly_name: esk1 air epaper
+  # How the label is found. By default by its advertised BLE name (a trailing
+  # * matches a prefix); the name can also be changed at run time from the
+  # web page or Home Assistant ("BLE Name"), which then wins over this value.
+  # OpenDisplay firmware advertises "OD" + 6 hex digits (from the chip ID, not
+  # necessarily the MAC); set the full name to pick one label among several.
+  esl_name: "OD*"
+  # MAC override: any address other than 00:00:00:00:00:00 is used as is and
+  # the name is ignored. The address in use is shown as "Label MAC".
+  esl_mac: "00:00:00:00:00:00"
+  # Default timezone: an IANA name (America/New_York) or a POSIX TZ string.
+  # It can be changed at run time from the web page or Home Assistant
+  # ("Timezone"), and that choice is kept across reboots.
+  timezone: "America/New_York"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.11.0         # sen6x; APIs the components use
+
+esp32:
+  variant: esp32c6
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: ${device_name} Fallback Hotspot
+    password: !secret esk1_air_epaper_ap_password
+
+api:
+  encryption:
+    key: !secret esk1_air_epaper_api_key
+
+ota:
+  - platform: esphome
+
+captive_portal:
+
+# Web page at http://esk1-air-epaper.local/ with the label's BLE name (editable)
+# and MAC address, next to the sensor readings.
+web_server:
+  port: 80
+  version: 3
+
+# Clock for the page's sample stamp. Two sources set the same system clock;
+# the most recent sync wins:
+#   ha_time   - Home Assistant, over the API, on connect and every 15 min
+#   sntp_time - internet NTP over Wi-Fi, a backup for when Home Assistant is
+#               down; first sync shortly after Wi-Fi connects, then every 15 min
+# A timezone here also stops Home Assistant from replacing it with its own on
+# each sync. The Timezone select below can change it at run time.
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: ${timezone}
+  - platform: sntp
+    id: sntp_time
+    timezone: ${timezone}
+    update_interval: 15min
+    servers:                     # at most 3; a router's IP also works
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+ble_client:
+  - id: esl_client
+    mac_address: ${esl_mac}
+
+i2c:
+  - id: i2c_bus
+    sda: GPIO1
+    scl: GPIO0
+
+# sen6x ignores readings for 60 s after start-up, so the first values take
+# up to about 2 minutes.
+sensor:
+  - platform: sen6x
+    id: sen65
+    type: SEN65
+    update_interval: 60s
+    pm_1_0:
+      name: PM1.0
+      id: pm_1_0
+    pm_2_5:
+      name: PM2.5
+      id: pm_2_5
+    pm_4_0:                      # reported, not drawn
+      name: PM4.0
+      id: pm_4_0
+    pm_10_0:
+      name: PM10
+      id: pm_10_0
+    temperature:
+      name: Temperature
+      id: temperature
+    humidity:
+      name: Humidity
+      id: humidity
+    voc_index:
+      name: VOC Index
+      id: voc_index
+    nox_index:
+      name: NOx Index
+      id: nox_index
+
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: 60s
+    entity_category: diagnostic
+
+# A 30,000-byte frame buffer (400x300 BWRY) is reserved at boot. The label's
+# own config is read on every connection; the dashboard refuses any label that
+# is not exactly 400x300 BWRY rather than stretch the page.
+display:
+  - platform: opendisplay
+    id: epaper
+    ble_client_id: esl_client
+    ble_name: ${esl_name}
+    width: 400
+    height: 300
+    color_scheme: BWRY
+    refresh_mode: FULL
+    # aqi_dashboard decides when to refresh; Refresh E-Paper (component.update)
+    # becomes a manual request that still respects the 15 min guard.
+    update_interval: never
+
+# The page: the AQI dashboard (components/aqi_dashboard). It draws through
+# the epaper display above and decides when the label refreshes.
+aqi_dashboard:
+  display_id: epaper
+  time_id: ha_time           # the Timezone select sets its zone
+  # A missing or failing SEN65 shows SENSOR MISSING / SENSOR ERROR in red
+  # in the header, and its cells turn yellow "--".
+  sen6x_id: sen65
+  title: INDOOR AIR          # up to 24 characters
+  temperature_unit: C        # C or F
+  sensors:
+    pm_2_5: pm_2_5
+    pm_10_0: pm_10_0
+    pm_1_0: pm_1_0
+    voc_index: voc_index
+    nox_index: nox_index
+    temperature: temperature
+    humidity: humidity
+    # co2: my_co2_sensor     # optional; the SEN65 has no CO2 channel
+  # Defaults from the spec, shown so they can be tuned. Bands are project
+  # event levels, not official AQI breakpoints or health limits.
+  timing:
+    routine: 30min           # a meaningful numeric change waits this long
+    heartbeat: 60min         # refresh even when stable
+    guard: 15min             # minimum between panel refreshes
+    persistence: 3min        # a colour change must hold this long
+    stale_after: 180s        # no reading for this long: yellow "--"
+    startup_wait: 180s       # first page waits this long for the SEN65
+  deadbands:
+    pm_absolute: 2           # ug/m3; PM uses max(this, pm_relative)
+    pm_relative: 20%
+    co2: 100
+    voc: 25
+    nox: 10
+    temperature: 0.5         # degrees C
+    humidity: 3
+  bands:
+    pm_2_5: {enter_yellow: 15, enter_red: 35, leave_yellow: 12, leave_red: 30}
+    voc: {enter_yellow: 150, enter_red: 400, leave_yellow: 130, leave_red: 350}
+    nox: {enter_yellow: 20, enter_red: 300, leave_yellow: 15, leave_red: 250}
+    co2: {enabled: false, enter_yellow: 1000, enter_red: 1500, leave_yellow: 900, leave_red: 1300}
+
+button:
+  - platform: template
+    name: Refresh E-Paper
+    on_press:
+      - component.update: epaper
+
+# The label's BLE name, editable on the web page and in Home Assistant. The
+# value is kept across reboots; esl_name above is only the first-boot default.
+text:
+  - platform: template
+    id: ble_name_text
+    name: BLE Name
+    icon: mdi:bluetooth
+    entity_category: config
+    mode: text
+    max_length: 29
+    optimistic: true
+    restore_value: true
+    initial_value: ${esl_name}
+    on_value:
+      - lambda: id(epaper).set_ble_name(x);
+
+text_sensor:
+  - platform: template
+    name: Label MAC
+    icon: mdi:bluetooth-connect
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      std::string mac = id(epaper).get_label_mac();
+      if (mac.empty())
+        return std::string("not found yet");
+      if (id(epaper).has_mac_override())
+        mac += " (override)";
+      return mac;
+
+# Timezone, changeable on the web page and in Home Assistant. Each option is
+# turned into rules at compile time (the device cannot parse timezones), so
+# the list is fixed here; add any IANA name or POSIX TZ string to it.
+select:
+  - platform: timezone_select
+    name: Timezone
+    time_id: ha_time
+    initial_option: ${timezone}
+    timezones:
+      - ${timezone}
+      - UTC
+      - America/New_York
+      - America/Chicago
+      - America/Denver
+      - America/Phoenix
+      - America/Los_Angeles
+      - America/Anchorage
+      - Pacific/Honolulu
+      - America/Toronto
+      - America/Vancouver
+      - Europe/London
+      - Europe/Paris
+      - Europe/Berlin
+      - Asia/Tokyo
+      - Asia/Seoul
+      - Asia/Shanghai
+      - Asia/Kolkata
+      - Australia/Sydney

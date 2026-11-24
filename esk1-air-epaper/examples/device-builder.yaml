@@ -1,0 +1,48 @@
+# esk1 air epaper for ESPHome Device Builder (Home Assistant add-on or the
+# standalone dashboard), with nothing copied from this repo.
+#
+# 1. In Device Builder: New Device, name it, choose ESP32-C6, skip the first
+#    install, then Edit and replace the whole file with this one. Set
+#    device_name below to the name you gave it.
+# 2. Add these keys to Device Builder's Secrets (top-right menu):
+#      wifi_ssid, wifi_password,
+#      esk1_air_epaper_ap_password,
+#      esk1_air_epaper_api_key   (32 random bytes, base64; e.g.
+#                                 openssl rand -base64 32)
+# 3. Install. Device Builder must run ESPHome 2026.11.0 or newer.
+#
+# The device config (esk1-air-epaper.base.yaml) and the components are fetched
+# from GitHub at the same ref. Keep the two refs equal. Pin a tag for a
+# device you rely on; while iterating, use a branch with refresh: 0s so each
+# build fetches the latest push. Only pushed commits are seen.
+#
+# A private repo needs username: <github user> and password: <token with
+# read access to contents> under both the package and the source.
+
+substitutions:
+  # Anything here overrides the package's default of the same name.
+  device_name: esk1-air-epaper
+  friendly_name: esk1 air epaper
+  esl_name: "OD*"                # or the label's full name, e.g. "OD1A2B3C"
+  esl_mac: "00:00:00:00:00:00"   # any other value overrides the name
+  timezone: "America/New_York"
+
+packages:
+  esk1_air_epaper:
+    url: https://github.com/davelee98/esphome-projects
+    ref: main
+    files: [esk1-air-epaper/esk1-air-epaper.base.yaml]
+    refresh: 1d
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/davelee98/esphome-projects
+      ref: main
+      path: esk1-air-epaper/components
+    components: [opendisplay, aqi_dashboard, timezone_select]
+    refresh: 1d
+
+# Any other key added here merges into the package and wins over it, e.g.:
+# logger:
+#   level: VERBOSE

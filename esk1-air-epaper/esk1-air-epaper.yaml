@@ -1,0 +1,18 @@
+# esk1 air epaper, built from this repo:
+#
+#   uvx esphome@2026.11.0 run esk1-air-epaper.yaml
+#
+# The device itself is in esk1-air-epaper.base.yaml; this file only adds the
+# components from ./components, so local edits to them are built at once.
+# Secrets come from secrets.yaml next to this file (gitignored).
+#
+# To build in ESPHome Device Builder instead, see examples/device-builder.yaml.
+
+packages:
+  device: !include esk1-air-epaper.base.yaml
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [opendisplay, aqi_dashboard, timezone_select]
