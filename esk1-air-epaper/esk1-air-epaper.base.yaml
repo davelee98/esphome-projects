@@ -1,7 +1,8 @@
 # esk1 air epaper: SEN65 air quality on a 4.2" OpenDisplay e-paper ESL, from an
 # ESPHome Starter Kit (ESP32-C6).
 #   C6 module -> controller, ESP-IDF
-#   SEN65     -> I2C on GPIO1 (SDA) / GPIO0 (SCL)
+#   SEN65     -> I2C on GPIO1 (SDA) / GPIO0 (SCL), powered from +3V3_CTRL,
+#                which GPIO4 switches on at boot
 #   ESL       -> 4.2" OpenDisplay e-paper label over BLE (no wiring)
 #
 # The ESK-1 draws the AQI dashboard itself (docs/aqi-dashboard-specification.md)
@@ -44,6 +45,9 @@ substitutions:
   # It can be changed at run time from the web page or Home Assistant
   # ("Timezone"), and that choice is kept across reboots.
   timezone: "America/New_York"
+  # The page's orientation on the label: 0 or 180 (for a label mounted
+  # upside down). The landscape page can't use 90 or 270.
+  display_rotation: "0"
 
 esphome:
   name: ${device_name}
@@ -108,6 +112,21 @@ i2c:
     sda: GPIO1
     scl: GPIO0
 
+# GPIO4 switches the kit's +3V3_CTRL accessory rail. The SEN65 needs it: with
+# the rail off the unpowered sensor holds SCL low, the bus scan finds nothing
+# and sen6x fails at boot (SENSOR MISSING). Priority 2000 turns it on before
+# the I2C bus (1000) scans and sen6x starts. Internal, so it can't be
+# switched off from Home Assistant.
+switch:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      ignore_strapping_warning: true   # the board's own power switch
+    id: accessory_power
+    restore_mode: ALWAYS_ON
+    setup_priority: 2000
+    internal: true
+
 # sen6x ignores readings for 60 s after start-up, so the first values take
 # up to about 2 minutes.
 sensor:
@@ -157,6 +176,7 @@ display:
     height: 300
     color_scheme: BWRY
     refresh_mode: FULL
+    rotation: ${display_rotation}
     # aqi_dashboard decides when to refresh; Refresh E-Paper (component.update)
     # becomes a manual request that still respects the 15 min guard.
     update_interval: never

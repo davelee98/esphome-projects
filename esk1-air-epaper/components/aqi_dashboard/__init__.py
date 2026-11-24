@@ -189,6 +189,11 @@ def _final_validate(config):
                 f"of display '{target}' or remove them",
                 path=path,
             )
+        if disp.get("rotation", 0) not in (0, 180):
+            raise cv.Invalid(
+                f"aqi_dashboard draws a landscape page; use rotation 0 or 180 on display '{target}'",
+                path=path + ["rotation"],
+            )
         interval = disp.get(CONF_UPDATE_INTERVAL)
         if interval is None or interval.total_milliseconds != SCHEDULER_DONT_RUN:
             raise cv.Invalid(

@@ -25,6 +25,7 @@ substitutions:
   esl_name: "OD*"                # or the label's full name, e.g. "OD1A2B3C"
   esl_mac: "00:00:00:00:00:00"   # any other value overrides the name
   timezone: "America/New_York"
+  display_rotation: "0"          # "180" for a label mounted upside down
 
 packages:
   esk1_air_epaper:

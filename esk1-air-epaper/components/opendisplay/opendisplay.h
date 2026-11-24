@@ -147,8 +147,17 @@ class OpenDisplay : public display::DisplayBuffer,
     this->required_height_ = height;
     this->required_scheme_ = scheme;
   }
-  // Draws one ink at physical coordinates, for a page component's renderer.
-  void put_ink(int x, int y, Ink ink) { this->write_ink_(x, y, this->panel_ink_(ink)); }
+  // Draws one ink, for a page component's renderer. The page has the panel's
+  // own size; rotation: 180 turns it upside down (for a label mounted that
+  // way). 90 / 270 would need a portrait page, so a page component that
+  // draws landscape refuses them at validation.
+  void put_ink(int x, int y, Ink ink) {
+    if (this->rotation_ == display::DISPLAY_ROTATION_180_DEGREES) {
+      x = this->width_ - 1 - x;
+      y = this->height_ - 1 - y;
+    }
+    this->write_ink_(x, y, this->panel_ink_(ink));
+  }
 
   void setup() override;
   void loop() override;
